@@ -1,0 +1,556 @@
+'use client';
+
+import { useState } from 'react';
+import { cn } from '@/lib/utils';
+import {
+  Bot,
+  Plus,
+  Play,
+  Pause,
+  Square,
+  Settings2,
+  TrendingUp,
+  Zap,
+  Target,
+  Shield,
+  Activity,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { useAgents, useApiKeys, useStrategies } from '@/lib/api/hooks';
+import { api } from '@/lib/api/client';
+import type { Agent, Timeframe } from '@/lib/api/types';
+
+const statusConfig = {
+  active: {
+    label: 'Active',
+    color: 'text-green-400',
+    bg: 'bg-green-500/10 border-green-500/20',
+    dot: 'bg-green-400',
+  },
+  paused: {
+    label: 'Paused',
+    color: 'text-orange-400',
+    bg: 'bg-orange-500/10 border-orange-500/20',
+    dot: 'bg-orange-400',
+  },
+  idle: {
+    label: 'Idle',
+    color: 'text-muted-foreground',
+    bg: 'bg-border',
+    dot: 'bg-muted-foreground',
+  },
+  stopped: {
+    label: 'Stopped',
+    color: 'text-red-400',
+    bg: 'bg-red-500/10 border-red-500/20',
+    dot: 'bg-red-400',
+  },
+  error: {
+    label: 'Error',
+    color: 'text-red-400',
+    bg: 'bg-red-500/10 border-red-500/20',
+    dot: 'bg-red-400',
+  },
+} as const;
+
+function AgentCard({
+  agent,
+  onAction,
+}: {
+  agent: Agent;
+  onAction: (id: string, action: 'start' | 'pause' | 'stop') => Promise<void>;
+}) {
+  const sc = statusConfig[agent.status];
+  const winRate =
+    agent.total_trades > 0
+      ? ((agent.winning_trades / agent.total_trades) * 100).toFixed(0)
+      : '0';
+  const isProfitable = agent.total_pnl >= 0;
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5 space-y-4 hover:border-primary/20 transition-all">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <div
+            className={cn(
+              'w-10 h-10 rounded-xl flex items-center justify-center border',
+              agent.status === 'active'
+                ? 'bg-green-500/10 border-green-500/20'
+                : 'bg-card border-border',
+            )}
+          >
+            <Bot
+              className={cn(
+                'w-5 h-5',
+                agent.status === 'active' ? 'text-green-400' : 'text-muted-foreground',
+              )}
+            />
+          </div>
+          <div>
+            <p className="font-semibold text-sm">{agent.name}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{agent.description}</p>
+          </div>
+        </div>
+        <div
+          className={cn(
+            'flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium border',
+            sc.bg,
+            sc.color,
+          )}
+        >
+          <div
+            className={cn(
+              'w-1.5 h-1.5 rounded-full',
+              sc.dot,
+              agent.status === 'active' && 'animate-pulse',
+            )}
+          />
+          {sc.label}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {[
+          { label: agent.strategy?.name ?? 'Strategy', icon: Zap },
+          { label: agent.timeframe, icon: Activity },
+          { label: `${Number(agent.max_risk_per_trade).toFixed(1)}% risk`, icon: Shield },
+        ].map(({ label, icon: Icon }) => (
+          <span
+            key={label}
+            className="flex items-center gap-1 px-2 py-0.5 bg-accent rounded-md text-[10px] text-muted-foreground"
+          >
+            <Icon className="w-2.5 h-2.5" />
+            {label}
+          </span>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-4 gap-3">
+        {[
+          {
+            label: 'Capital',
+            value: `$${Number(agent.assigned_capital).toLocaleString()}`,
+            color: 'text-foreground',
+          },
+          {
+            label: 'Total P&L',
+            value: `${isProfitable ? '+' : ''}$${Number(agent.total_pnl).toFixed(1)}`,
+            color: isProfitable ? 'text-profit' : 'text-loss',
+          },
+          { label: 'Win Rate', value: `${winRate}%`, color: 'text-foreground' },
+          { label: 'Trades', value: String(agent.total_trades), color: 'text-foreground' },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="text-center">
+            <p className={cn('text-sm font-bold font-mono', color)}>{value}</p>
+            <p className="text-[10px] text-muted-foreground">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>AI Confidence</span>
+          <span className="font-mono">{Number(agent.confidence_score).toFixed(0)}%</span>
+        </div>
+        <div className="h-1.5 bg-border rounded-full overflow-hidden">
+          <div
+            className={cn(
+              'h-full rounded-full transition-all',
+              Number(agent.confidence_score) > 70
+                ? 'bg-green-400'
+                : Number(agent.confidence_score) > 40
+                ? 'bg-orange-400'
+                : 'bg-red-400',
+            )}
+            style={{ width: `${agent.confidence_score}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">Today&apos;s P&L</span>
+        <span
+          className={cn(
+            'font-mono font-medium',
+            Number(agent.current_day_pnl) >= 0 ? 'text-profit' : 'text-loss',
+          )}
+        >
+          {Number(agent.current_day_pnl) >= 0 ? '+' : ''}$
+          {Number(agent.current_day_pnl).toFixed(2)}
+        </span>
+      </div>
+
+      <div className="flex gap-2 pt-1">
+        {agent.status === 'active' ? (
+          <button
+            onClick={() => onAction(agent.id, 'pause')}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 text-orange-400 rounded-lg text-xs font-medium transition-all"
+          >
+            <Pause className="w-3.5 h-3.5" /> Pause
+          </button>
+        ) : (
+          <button
+            onClick={() => onAction(agent.id, 'start')}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 text-green-400 rounded-lg text-xs font-medium transition-all"
+          >
+            <Play className="w-3.5 h-3.5" /> Start
+          </button>
+        )}
+        <button
+          onClick={() => onAction(agent.id, 'stop')}
+          className="py-2 px-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-lg text-xs transition-all"
+        >
+          <Square className="w-3.5 h-3.5" />
+        </button>
+        <button
+          className="py-2 px-3 bg-accent hover:bg-accent/80 border border-border text-muted-foreground rounded-lg text-xs transition-all"
+          title="Edit (coming soon)"
+        >
+          <Settings2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+
+export default function AgentsPage() {
+  const { data: agents, refetch: refetchAgents, error: agentsError } = useAgents();
+  const { data: apiKeys } = useApiKeys();
+  const { data: strategies } = useStrategies();
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    api_key_id: '',
+    strategy_id: '',
+    capital: 500,
+    riskPct: 2,
+    pairs: 'BTCUSDT',
+    timeframe: '15m' as Timeframe,
+  });
+
+  async function handleAction(id: string, action: 'start' | 'pause' | 'stop') {
+    try {
+      await api.controlAgent(id, action);
+      await refetchAgents();
+    } catch (exc) {
+      // Surface failures non-disruptively.
+      console.error('agent action failed', exc);
+    }
+  }
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError('');
+    if (!form.api_key_id || !form.strategy_id || !form.name) return;
+    setSubmitting(true);
+    try {
+      await api.createAgent({
+        name: form.name,
+        description: form.description,
+        api_key_id: form.api_key_id,
+        strategy_id: form.strategy_id,
+        assigned_capital: form.capital,
+        currency: 'USDT',
+        trading_pairs: form.pairs.split(',').map(p => p.trim()).filter(Boolean),
+        timeframe: form.timeframe,
+        max_risk_per_trade: form.riskPct,
+      });
+      await refetchAgents();
+      setShowCreate(false);
+      setForm({
+        name: '',
+        description: '',
+        api_key_id: '',
+        strategy_id: '',
+        capital: 500,
+        riskPct: 2,
+        pairs: 'BTCUSDT',
+        timeframe: '15m',
+      });
+    } catch (exc) {
+      setFormError((exc as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const list = agents ?? [];
+  const totalCapital = list.reduce((a, b) => a + Number(b.assigned_capital), 0);
+  const totalPnl = list.reduce((a, b) => a + Number(b.total_pnl), 0);
+  const activeCount = list.filter(a => a.status === 'active').length;
+
+  return (
+    <div className="p-6 space-y-6 max-w-[1400px]">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold">AI Agents</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Configure and manage your trading agents
+          </p>
+        </div>
+        <Button onClick={() => setShowCreate(true)} className="h-9 text-xs gap-2">
+          <Plus className="w-3.5 h-3.5" /> New Agent
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          {
+            label: 'Active Agents',
+            value: `${activeCount}/${list.length}`,
+            icon: Bot,
+            color: 'text-green-400',
+          },
+          {
+            label: 'Total Assigned',
+            value: `$${totalCapital.toLocaleString()}`,
+            icon: Target,
+            color: 'text-primary',
+          },
+          {
+            label: 'Combined P&L',
+            value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`,
+            icon: TrendingUp,
+            color: totalPnl >= 0 ? 'text-profit' : 'text-loss',
+          },
+        ].map(({ label, value, icon: Icon, color }) => (
+          <div
+            key={label}
+            className="bg-card border border-border rounded-xl p-4 flex items-center gap-3"
+          >
+            <Icon className={cn('w-5 h-5', color)} />
+            <div>
+              <p className="text-lg font-bold font-mono">{value}</p>
+              <p className="text-xs text-muted-foreground">{label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 px-4 py-3 bg-orange-500/5 border border-orange-500/15 rounded-xl">
+        <Shield className="w-4 h-4 text-orange-400 shrink-0" />
+        <p className="text-xs text-muted-foreground">
+          <span className="text-orange-400 font-medium">Risk Engine Active:</span> Max 2%
+          risk/trade is enforced. Agents stop after consecutive losses. Daily drawdown
+          limit overrides all AI signals.
+        </p>
+      </div>
+
+      {agentsError && (
+        <div className="px-4 py-3 bg-red-500/5 border border-red-500/15 rounded-xl text-xs text-red-400">
+          Failed to load agents: {agentsError.message}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+        {list.map(agent => (
+          <AgentCard key={agent.id} agent={agent} onAction={handleAction} />
+        ))}
+        {list.length === 0 && agents !== null && (
+          <div className="col-span-full text-center py-12 bg-card border border-dashed border-border rounded-xl">
+            <Bot className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+            <p className="text-sm font-medium">No agents yet</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Create your first AI agent to start trading.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <p className="text-sm font-semibold">Available Strategies</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {(strategies ?? []).map(s => (
+            <div
+              key={s.id}
+              className="p-3 bg-background border border-border rounded-lg space-y-2 hover:border-primary/20 transition-all"
+            >
+              <div className="flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5 text-primary" />
+                <p className="text-xs font-semibold">{s.name}</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground">{s.description}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          <span className="text-primary">AI Optimization:</span> Bayesian parameter tuning
+          adjusts stop-loss, take-profit, and entry thresholds. It does NOT make
+          autonomous trading decisions.
+        </p>
+      </div>
+
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent className="bg-card border-border max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create AI Agent</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreate} className="space-y-4 mt-2">
+            <div className="space-y-2">
+              <Label>Agent Name</Label>
+              <Input
+                value={form.name}
+                onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+                placeholder="My Trading Agent"
+                required
+                className="bg-background border-border"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Exchange Account</Label>
+                <Select
+                  value={form.api_key_id}
+                  onValueChange={v => setForm(p => ({ ...p, api_key_id: v }))}
+                >
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue
+                      placeholder={(apiKeys ?? []).length ? 'Select API key' : 'Add an API key first'}
+                    />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    {(apiKeys ?? []).map(k => (
+                      <SelectItem key={k.id} value={k.id}>
+                        {k.label || `${k.exchange}${k.is_testnet ? ' (testnet)' : ''}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Strategy</Label>
+                <Select
+                  value={form.strategy_id}
+                  onValueChange={v => setForm(p => ({ ...p, strategy_id: v }))}
+                >
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue placeholder="Select strategy" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    {(strategies ?? []).map(s => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Assigned Capital (USDT)</Label>
+                <Input
+                  type="number"
+                  min={100}
+                  value={form.capital}
+                  onChange={e => setForm(p => ({ ...p, capital: Number(e.target.value) }))}
+                  className="bg-background border-border"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Timeframe</Label>
+                <Select
+                  value={form.timeframe}
+                  onValueChange={v => setForm(p => ({ ...p, timeframe: v as Timeframe }))}
+                >
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    {TIMEFRAMES.map(t => (
+                      <SelectItem key={t} value={t}>
+                        {t}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Max Risk Per Trade:{' '}
+                <span className="text-primary font-mono">{form.riskPct}%</span>
+              </Label>
+              <Slider
+                min={0.5}
+                max={2}
+                step={0.5}
+                value={[form.riskPct]}
+                onValueChange={([v]) => setForm(p => ({ ...p, riskPct: v }))}
+                className="w-full"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                System hard cap is 2% per trade.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Trading Pairs (comma separated)</Label>
+              <Input
+                value={form.pairs}
+                onChange={e => setForm(p => ({ ...p, pairs: e.target.value }))}
+                placeholder="BTCUSDT, ETHUSDT"
+                className="bg-background border-border"
+              />
+            </div>
+
+            {formError && (
+              <div className="text-xs text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
+                {formError}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowCreate(false)}
+                className="flex-1 border-border"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="flex-1 bg-primary"
+                disabled={
+                  submitting ||
+                  !form.name ||
+                  !form.strategy_id ||
+                  !form.api_key_id
+                }
+              >
+                {submitting ? 'Creating…' : 'Create Agent'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
