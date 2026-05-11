@@ -1,5 +1,9 @@
-from __future__ import annotations
-
+# NOTE: do not add `from __future__ import annotations` here.
+# slowapi's `@limiter.limit` wrapper interacts badly with PEP 563
+# stringified annotations: FastAPI's `get_type_hints()` cannot resolve
+# `RegisterRequest`/`LoginRequest` from the wrapped function's globals,
+# producing `PydanticUndefinedAnnotation: name 'RegisterRequest' is not defined`
+# at app startup. Keeping annotations as real objects sidesteps the issue.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
