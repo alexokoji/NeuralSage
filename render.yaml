@@ -30,6 +30,11 @@ databases:
 envVarGroups:
   - name: neuraltrade-shared
     envVars:
+      # Pin Python to a version with prebuilt wheels for pydantic-core,
+      # scikit-learn, cryptography, etc. 3.14 is too new — falls back to
+      # source builds and Render's build env has a read-only Cargo cache.
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: APP_ENV
         value: production
       - key: APP_DEBUG
