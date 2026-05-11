@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { Sidebar } from '@/components/layout/sidebar';
@@ -9,6 +9,8 @@ import { Topbar } from '@/components/layout/topbar';
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const router = useRouter();
+  // Mobile drawer state. Desktop ignores it (sidebar is always in-flow).
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -28,12 +30,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      <Sidebar />
+      <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
       <div className="flex-1 flex flex-col min-w-0">
-        <Topbar />
-        <main className="flex-1 overflow-y-auto">
-          {children}
-        </main>
+        <Topbar onMobileMenuClick={() => setMobileOpen(true)} />
+        <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
     </div>
   );

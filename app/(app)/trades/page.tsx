@@ -63,9 +63,9 @@ export default function TradesPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px]">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold">Trade History</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Complete log of all AI agent trades
@@ -73,9 +73,9 @@ export default function TradesPage() {
         </div>
         <button
           onClick={exportCsv}
-          className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-xs hover:bg-accent transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-xs hover:bg-accent transition-colors shrink-0"
         >
-          <Download className="w-3.5 h-3.5" /> Export CSV
+          <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Export CSV</span>
         </button>
       </div>
 

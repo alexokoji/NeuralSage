@@ -154,7 +154,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-[900px]">
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[900px]">
       <div>
         <h2 className="text-lg font-bold">Settings</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
@@ -162,13 +162,13 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex border-b border-border gap-1">
+      <div className="flex border-b border-border gap-1 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
         {tabs.map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={cn(
-              'px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-all',
+              'px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-all whitespace-nowrap shrink-0',
               activeTab === tab
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground',

@@ -303,20 +303,20 @@ export default function AgentsPage() {
   const activeCount = list.filter(a => a.status === 'active').length;
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px]">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold">AI Agents</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Configure and manage your trading agents
           </p>
         </div>
-        <Button onClick={() => setShowCreate(true)} className="h-9 text-xs gap-2">
-          <Plus className="w-3.5 h-3.5" /> New Agent
+        <Button onClick={() => setShowCreate(true)} className="h-9 text-xs gap-2 shrink-0">
+          <Plus className="w-3.5 h-3.5" /> <span className="hidden sm:inline">New Agent</span><span className="sm:hidden">New</span>
         </Button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
         {[
           {
             label: 'Active Agents',

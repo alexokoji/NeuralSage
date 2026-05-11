@@ -93,9 +93,9 @@ export default function PortfolioPage() {
   const worst = pnlHistory.reduce((a, b) => Math.min(a, b.pnl), 0);
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px]">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold">Portfolio</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Connected exchange balances (read-only)
@@ -104,16 +104,14 @@ export default function PortfolioPage() {
         <button
           onClick={refetch}
           disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-xs hover:bg-accent transition-colors disabled:opacity-50"
+          className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-xs hover:bg-accent transition-colors disabled:opacity-50 shrink-0"
         >
-          <RefreshCw
-            className={cn('w-3.5 h-3.5', loading && 'animate-spin')}
-          />
-          Refresh Balances
+          <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
+          <span className="hidden sm:inline">Refresh Balances</span>
         </button>
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-6">
+      <div className="bg-card border border-border rounded-xl p-4 md:p-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground uppercase tracking-wider">
@@ -183,8 +181,8 @@ export default function PortfolioPage() {
             </div>
           </div>
 
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="bg-card border border-border rounded-xl overflow-x-auto">
+            <table className="w-full text-xs min-w-[600px]">
               <thead>
                 <tr className="border-b border-border">
                   {['Asset', 'Exchange', 'Balance', 'USD Value', 'Allocation'].map(h => (

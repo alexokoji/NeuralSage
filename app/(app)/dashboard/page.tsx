@@ -129,15 +129,15 @@ export default function DashboardPage() {
   const recentTrades = (trades ?? []).slice(0, 6);
 
   return (
-    <div className="p-6 space-y-6 max-w-[1600px]">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1600px]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-lg font-bold">Overview</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Real-time portfolio &amp; agent monitoring
           </p>
         </div>
-        <div className="flex items-center gap-1 bg-card border border-border rounded-lg p-1">
+        <div className="flex items-center gap-1 bg-card border border-border rounded-lg p-1 shrink-0">
           {(['7d', '30d', 'all'] as const).map(r => (
             <button
               key={r}
