@@ -24,7 +24,25 @@ async def lifespan(app: FastAPI):
         await seed_strategies()
     except Exception as exc:  # noqa: BLE001
         logger.warning("strategy seed skipped: {}", exc)
+
+    # Drive the trading loop, optimization sweep, and daily rollover
+    # in-process. Set ENABLE_IN_PROCESS_SCHEDULER=false to fall back to
+    # an externally-run Celery worker instead.
+    if settings.ENABLE_IN_PROCESS_SCHEDULER:
+        try:
+            from app.scheduler import shutdown as _sched_shutdown
+            from app.scheduler import start as _sched_start
+
+            _sched_start()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("failed to start in-process scheduler: {}", exc)
+            _sched_shutdown = lambda: None  # noqa: E731
+    else:
+        _sched_shutdown = lambda: None  # noqa: E731
+
     yield
+
+    _sched_shutdown()
     await engine.dispose()
 
 

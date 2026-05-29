@@ -1,4 +1,9 @@
-"""Rate limiter wired to slowapi (Redis-backed when REDIS_URL is set)."""
+"""Rate limiter wired to slowapi.
+
+Storage backend:
+  * `memory://` (default) when REDIS_URL is unset — single-instance only.
+  * `redis://...` when REDIS_URL is set — survives restarts, multi-instance safe.
+"""
 from __future__ import annotations
 
 from slowapi import Limiter
@@ -15,8 +20,10 @@ def _key_func(request) -> str:
     return get_remote_address(request)
 
 
+_storage_uri = settings.REDIS_URL or "memory://"
+
 limiter = Limiter(
     key_func=_key_func,
-    storage_uri=settings.REDIS_URL,
+    storage_uri=_storage_uri,
     default_limits=[settings.RATE_LIMIT_DEFAULT],
 )

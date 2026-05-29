@@ -1,17 +1,23 @@
-# Render Blueprint — NeuralTrade
+# Render Blueprint — NeuralTrade (single-service edition)
 #
-# This file describes the full stack so a single "New → Blueprint" import
-# brings up Postgres, Redis, FastAPI backend, the combined Celery
-# worker+beat, and (optionally) the Next.js frontend.
+# This blueprint runs the entire backend (HTTP API + trading loop +
+# AI optimization + daily rollover) inside ONE Web Service via the
+# in-process APScheduler. No paid Celery worker is required.
+#
+# Provisioned:
+#   * Managed Postgres (Starter, $7/mo — or free for 90 days on first signup)
+#   * FastAPI backend (Web, Starter, $7/mo)
+#   * Next.js frontend (Web, Starter, $7/mo — comment out if hosting on Vercel)
+#
+# Redis is OPTIONAL. The app falls back to in-memory implementations for
+# the rate limiter, market-data cache, and notification pubsub when
+# REDIS_URL is empty. Add a Render Key Value service later if you need
+# multi-instance scaling.
 #
 # Two secrets must be set manually in the Render dashboard before first
 # deploy: JWT_SECRET_KEY and ENCRYPTION_KEY. Generate them locally with:
 #   python -c "import secrets; print(secrets.token_urlsafe(64))"
 #   python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
-#
-# Free tier note: Postgres, Redis, and the worker are NOT free. The worker
-# in particular must stay awake to drive the trading loop — Starter is the
-# minimum sane plan there.
 
 # ---------------------------------------------------------------------------
 # Managed Postgres
@@ -20,19 +26,18 @@ databases:
   - name: neuraltrade-db
     databaseName: neuraltrade
     user: neuraltrade
-    plan: starter           # $7/mo, 256 MB RAM, 1 GB storage
+    plan: starter
     postgresMajorVersion: "16"
     ipAllowList: []         # private network only
 
 # ---------------------------------------------------------------------------
-# Shared environment variables (DRY between backend + worker)
+# Shared environment variables
 # ---------------------------------------------------------------------------
 envVarGroups:
   - name: neuraltrade-shared
     envVars:
       # Pin Python to a version with prebuilt wheels for pydantic-core,
-      # scikit-learn, cryptography, etc. 3.14 is too new — falls back to
-      # source builds and Render's build env has a read-only Cargo cache.
+      # scikit-learn, cryptography, etc.
       - key: PYTHON_VERSION
         value: 3.12.7
       - key: APP_ENV
@@ -41,6 +46,9 @@ envVarGroups:
         value: "false"
       - key: APP_NAME
         value: NeuralTrade
+      # Single backend service drives all background work itself.
+      - key: ENABLE_IN_PROCESS_SCHEDULER
+        value: "true"
       # Trading hard caps. Override per environment in the dashboard.
       - key: MAX_RISK_PER_TRADE_PCT
         value: "2.0"
@@ -72,27 +80,19 @@ envVarGroups:
 
 services:
   # -------------------------------------------------------------------------
-  # Redis (Render Key Value) — cache + Celery broker + pubsub
-  # -------------------------------------------------------------------------
-  - type: redis
-    name: neuraltrade-redis
-    plan: starter           # $10/mo, 25 MB
-    ipAllowList: []         # private only
-    maxmemoryPolicy: allkeys-lru
-
-  # -------------------------------------------------------------------------
-  # FastAPI backend
+  # FastAPI backend — also drives the trading loop + AI optimization
+  # via APScheduler inside the same process.
   # -------------------------------------------------------------------------
   - type: web
     name: neuraltrade-backend
     runtime: python
-    plan: starter           # $7/mo, 512 MB
+    plan: starter
     rootDir: backend
-    region: oregon          # change to a region near your exchange edge
+    region: oregon
     healthCheckPath: /health
     autoDeploy: true
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    # Run migrations every boot. Idempotent; cheap on warm starts.
+    # Run migrations every boot. Idempotent on warm starts.
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - fromGroup: neuraltrade-shared
@@ -100,44 +100,14 @@ services:
         fromDatabase:
           name: neuraltrade-db
           property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: neuraltrade-redis
-          property: connectionString
 
   # -------------------------------------------------------------------------
-  # Celery worker (with embedded beat scheduler via -B)
-  # -------------------------------------------------------------------------
-  - type: worker
-    name: neuraltrade-worker
-    runtime: python
-    plan: starter           # $7/mo. Run a single instance; beat must be singleton.
-    rootDir: backend
-    region: oregon
-    autoDeploy: true
-    numInstances: 1
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=info --concurrency=2
-    envVars:
-      - fromGroup: neuraltrade-shared
-      - key: DATABASE_URL
-        fromDatabase:
-          name: neuraltrade-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: neuraltrade-redis
-          property: connectionString
-
-  # -------------------------------------------------------------------------
-  # Next.js frontend (optional — Vercel is also fine; comment out if hosting elsewhere)
+  # Next.js frontend (optional — Vercel is also fine; remove if hosting elsewhere)
   # -------------------------------------------------------------------------
   - type: web
     name: neuraltrade-frontend
     runtime: node
-    plan: starter           # $7/mo. Use "free" only if you accept cold starts.
+    plan: starter
     region: oregon
     autoDeploy: true
     buildCommand: npm install && npm run build
@@ -145,9 +115,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
-      # Render only exposes `host`/`port` (not a scheme'd URL) via fromService,
-      # and the typed API client requires the full `https://...`. Set this in
-      # the dashboard once the backend service is live; format:
-      #   https://neuraltrade-backend.onrender.com
+      # Set in the dashboard once the backend service URL is known.
+      # Format: https://neuraltrade-backend.onrender.com (no trailing slash).
       - key: NEXT_PUBLIC_API_URL
         sync: false

@@ -8,6 +8,7 @@ from app.models.position import Position
 from app.models.agent_performance import AgentPerformance
 from app.models.risk_event import RiskEvent
 from app.models.notification import Notification
+from app.models.strategy_observation import StrategyObservation
 
 __all__ = [
     "User",
@@ -19,4 +20,5 @@ __all__ = [
     "AgentPerformance",
     "RiskEvent",
     "Notification",
+    "StrategyObservation",
 ]

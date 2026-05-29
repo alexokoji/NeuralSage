@@ -6,7 +6,9 @@ It does NOT decide whether to trade — that remains the strategy's
 job, gated by the risk engine.
 
 Implementation: scikit-optimize gp_minimize (Bayesian optimization with
-a Gaussian process surrogate) over a bounded search space.
+a Gaussian process surrogate) over a bounded search space. Optionally
+warm-started from `StrategyObservation` rows produced by other agents
+using the same strategy / symbol / timeframe — see learning.py.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from skopt import gp_minimize
 from skopt.space import Real
 
 from app.services.backtester import backtest
+from app.services.learning import coerce_warm_starts
 from app.services.strategy.base import Strategy
 
 # Per-strategy tunable bounds. Anything outside these will not be searched.
@@ -56,6 +59,7 @@ class OptimizationResult:
     best_score: float
     iterations: int
     history: list[dict[str, Any]]
+    warm_starts_used: int = 0
 
 
 def optimize_strategy(
@@ -63,6 +67,7 @@ def optimize_strategy(
     candles: pd.DataFrame,
     base_params: dict[str, Any],
     *,
+    warm_starts: list[dict[str, Any]] | None = None,
     n_calls: int = 25,
     random_state: int = 42,
 ) -> OptimizationResult:
@@ -76,6 +81,13 @@ def optimize_strategy(
     space = [Real(low, high, name=k) for k, (low, high) in space_def.items()]
     history: list[dict[str, Any]] = []
 
+    # Translate cross-agent observations into seed points the optimizer can use.
+    x0: list[list[float]] | None = None
+    if warm_starts:
+        x0 = coerce_warm_starts(warm_starts, keys=keys, bounds=space_def)
+        if not x0:
+            x0 = None
+
     def objective(values: list[float]) -> float:
         candidate = dict(base_params)
         for k, v in zip(keys, values):
@@ -84,12 +96,21 @@ def optimize_strategy(
         history.append({"params": {k: float(v) for k, v in zip(keys, values)}, "score": result.score})
         return -result.score  # gp_minimize minimizes
 
+    # If warm starts are provided, gp_minimize uses them as the initial design
+    # set and `n_initial_points` should be 0 to avoid double-sampling.
+    if x0:
+        n_calls_total = max(n_calls, len(x0) + 5)
+        gp_kwargs = {"x0": x0, "n_initial_points": 0}
+    else:
+        n_calls_total = max(n_calls, 10)
+        gp_kwargs = {"n_initial_points": min(5, n_calls)}
+
     result = gp_minimize(
         objective,
         space,
-        n_calls=max(n_calls, 10),
+        n_calls=n_calls_total,
         random_state=random_state,
-        n_initial_points=min(5, n_calls),
+        **gp_kwargs,
     )
 
     best = dict(base_params)
@@ -99,5 +120,6 @@ def optimize_strategy(
         best_params=best,
         best_score=-float(result.fun),
         iterations=len(history),
-        history=history[-50:],  # keep tail for inspection
+        history=history[-50:],
+        warm_starts_used=len(x0 or []),
     )

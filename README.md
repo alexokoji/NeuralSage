@@ -9,22 +9,37 @@ A hybrid-AI crypto trading platform with strict server-side risk management, Byb
 ## Architecture
 
 ```
-┌──────────────────────────┐        ┌──────────────────────────────────┐
-│ Next.js 13 frontend      │  HTTPS │ FastAPI gateway (Python 3.12)    │
-│ – React Three Fiber UI   │ ─────▶ │ – JWT auth                       │
-│ – Tailwind + shadcn      │        │ – AES-256-GCM key vault          │
-│ – Typed API client       │        │ – Strategy + Risk + AI Optimizer │
-└──────────────────────────┘        │ – Bybit + Bitget integration     │
-                                    └─────────────┬────────────────────┘
+┌──────────────────────────┐        ┌─────────────────────────────────────────┐
+│ Next.js 13 frontend      │  HTTPS │ FastAPI gateway (Python 3.12)           │
+│ – React Three Fiber UI   │ ─────▶ │ – JWT auth                              │
+│ – Tailwind + shadcn      │        │ – AES-256-GCM key vault                 │
+│ – Typed API client       │        │ – Strategy + Risk + AI Optimizer        │
+└──────────────────────────┘        │ – Bybit + Bitget integration            │
+                                    │ – APScheduler (in-process):             │
+                                    │     • trading tick      (every 15s)     │
+                                    │     • optimization sweep (every 6h)     │
+                                    │     • daily rollover    (00:01 UTC)     │
+                                    └─────────────┬───────────────────────────┘
                                                   │
-                          ┌───────────────────────┼─────────────────────┐
-                          ▼                       ▼                     ▼
-                ┌──────────────────┐   ┌──────────────────┐   ┌────────────────┐
-                │ Postgres 16      │   │ Redis            │   │ Celery workers │
-                │ – users / agents │   │ – ticker cache   │   │ – trade ticks  │
-                │ – trades / risk  │   │ – pubsub fanout  │   │ – optimization │
-                └──────────────────┘   └──────────────────┘   └────────────────┘
+                                                  ▼
+                                    ┌──────────────────────────────┐
+                                    │ Postgres 16                  │
+                                    │ – users / agents / trades    │
+                                    │ – strategy_observations      │
+                                    │     (cross-agent learning KB)│
+                                    └──────────────────────────────┘
+
+  Redis is OPTIONAL. When set, swaps in for the rate limiter, market-data
+  cache, and notification pubsub. When unset (default), those services use
+  in-process fallbacks — fine for single-instance deployments.
+
+  Celery is also OPTIONAL. Set ENABLE_IN_PROCESS_SCHEDULER=false to drive
+  the jobs from a separate worker process via `celery worker -B` instead.
 ```
+
+### Cross-agent learning
+
+Every AI optimization run records its best parameter set as a `StrategyObservation` (strategy_type + symbol + timeframe + params + backtest score). Future optimization runs — from *any* user's agent on the same strategy — warm-start the Bayesian optimizer with the top-ranked observations from that pool. Trust ranking blends backtest performance with realized PnL once trades accumulate, so paper-only param sets carry less weight than ones that have actually made money. The result: each agent contributes to a collective knowledge base and benefits from what every other agent has discovered, without abandoning its own risk caps.
 
 ### Modules
 
@@ -192,7 +207,7 @@ project/
 
 ## Deploying to Render.com
 
-The repo ships with a [`render.yaml`](render.yaml) Blueprint that provisions Postgres, Redis (Key Value), the FastAPI backend, the Celery worker (with embedded beat), and optionally the Next.js frontend in one shot.
+The repo ships with a [`render.yaml`](render.yaml) Blueprint that provisions Postgres, the FastAPI backend (which drives trading + AI optimization in-process via APScheduler), and optionally the Next.js frontend. No paid Celery worker, no required Redis.
 
 ### 1. Generate two secrets locally
 
@@ -211,18 +226,16 @@ Render's Blueprints deploy from a connected Git provider. There's nothing specia
 
 1. Render dashboard → **New ▸ Blueprint**.
 2. Pick the repository, accept the default branch, click **Apply**.
-3. Render reads `render.yaml` and previews five resources:
+3. Render reads `render.yaml` and previews three resources:
    - `neuraltrade-db` (Postgres, Starter)
-   - `neuraltrade-redis` (Key Value, Starter)
-   - `neuraltrade-backend` (Web Service, Starter, Python)
-   - `neuraltrade-worker` (Background Worker, Starter)
+   - `neuraltrade-backend` (Web Service, Starter, Python) — runs the HTTP API **and** the trading loop / AI optimization sweep / daily rollover via in-process APScheduler. No separate worker needed.
    - `neuraltrade-frontend` (Web Service, Starter, Node) — comment out if you're hosting the frontend on Vercel instead.
 
 Approve the preview. The first build takes ~5 minutes; the database is provisioned in parallel.
 
 ### 4. Set the manual secrets
 
-While the build runs, open the **Environment** tab on **both** `neuraltrade-backend` and `neuraltrade-worker` (they share the `neuraltrade-shared` env group, so you can edit it once on either service):
+While the build runs, open the **Environment** tab on `neuraltrade-backend`. The env group `neuraltrade-shared` is attached to it:
 
 | Key                  | Value                                                                  |
 | -------------------- | ---------------------------------------------------------------------- |
@@ -230,7 +243,7 @@ While the build runs, open the **Environment** tab on **both** `neuraltrade-back
 | `ENCRYPTION_KEY`     | The second secret (must be 32 raw bytes after urlsafe-b64 decode)      |
 | `APP_CORS_ORIGINS`   | The frontend URL — set after step 5, e.g. `https://neuraltrade-frontend.onrender.com` |
 
-Save. Render rebuilds the affected services automatically.
+Save. Render rebuilds the backend automatically.
 
 ### 5. Wire the frontend → backend URL
 
@@ -238,7 +251,7 @@ Once the `neuraltrade-backend` service is healthy:
 
 1. Copy its public URL from the dashboard (looks like `https://neuraltrade-backend.onrender.com`).
 2. On the `neuraltrade-frontend` service, set `NEXT_PUBLIC_API_URL` to that URL (no trailing slash). Save → triggers a redeploy.
-3. Go back to the env group and set `APP_CORS_ORIGINS` to the **frontend's** URL. Save → backend + worker pick it up.
+3. Go back to the env group and set `APP_CORS_ORIGINS` to the **frontend's** URL. Save → backend picks it up.
 
 ### 6. Verify
 
@@ -251,34 +264,37 @@ Open the frontend URL, register an account, and confirm the dashboard loads. Add
 
 ### What's actually different from local Docker?
 
-| Thing                         | Local                          | Render                                        |
-| ----------------------------- | ------------------------------ | --------------------------------------------- |
-| Postgres URL                  | `postgresql+asyncpg://...`     | `postgresql://...` — auto-rewritten by config |
-| SSL on Postgres               | off                            | required; `?sslmode=require` translated to asyncpg `?ssl=require` |
-| Celery broker                 | `redis://redis:6379/1`         | shares the single Render Key Value via `REDIS_URL` |
-| Beat scheduler                | separate `beat` container      | runs in-process with the worker (`celery worker -B`) |
-| Egress IP for exchange APIs   | your laptop                    | Render's shared egress; **not static on Starter** |
+| Thing                         | Local                              | Render                                        |
+| ----------------------------- | ---------------------------------- | --------------------------------------------- |
+| Postgres URL                  | `postgresql+asyncpg://...`         | `postgresql://...` — auto-rewritten by config |
+| SSL on Postgres               | off                                | required; `?sslmode=require` translated to asyncpg `?ssl=require` |
+| Trading loop / optimization   | separate `worker` + `beat` containers | runs **in the FastAPI process** via APScheduler |
+| Rate limiter                  | Redis-backed                       | in-memory (single instance)                   |
+| Market data cache             | Redis-backed                       | in-memory (per-process, 5–30s TTL)            |
+| Notification pubsub           | Redis fan-out                      | DB-only (frontend polls `/notifications`)     |
+| Egress IP for exchange APIs   | your laptop                        | Render's shared egress; **not static on Starter** |
 
 ### Cost (USD/month)
 
 | Service              | Plan      | Price |
 | -------------------- | --------- | ----- |
 | Postgres             | Starter   | $7    |
-| Key Value (Redis)    | Starter   | $10   |
 | Backend Web          | Starter   | $7    |
-| Worker (with beat)   | Starter   | $7    |
 | Frontend Web         | Starter   | $7    |
-| **Total**            |           | **$38** |
+| **Total**            |           | **$21** |
 
-Drop the frontend to free tier (cold starts after 15 min idle) or move it to Vercel ($0) to bring this to **$31/mo**.
+Skip the frontend on Render (use Vercel free tier) to bring it down to **$14/mo**. Postgres is free for the first 90 days on new accounts, so day-one cost is **$7** (or **$0** if you also host the frontend elsewhere).
+
+When you outgrow a single instance, add Render Key Value ($10/mo) and set `REDIS_URL` — the in-memory implementations will swap to Redis automatically. If you ever want to scale the backend horizontally, also set `ENABLE_IN_PROCESS_SCHEDULER=false` and run a separate $7 worker so jobs don't double-fire.
 
 ### Things to watch on Render
 
-- **Egress IP changes.** Bybit / Bitget keys with IP allowlists need a static outbound IP. Starter doesn't provide one — either remove IP restrictions on the exchange key, or upgrade the worker to a plan with static egress.
-- **Single beat instance.** Never set `numInstances > 1` on `neuraltrade-worker`; multiple beat schedulers double-fire tasks. If you outgrow one worker, split off a dedicated `worker-only` service (no `--beat`) and keep beat on a singleton.
+- **Single backend instance only** (with `ENABLE_IN_PROCESS_SCHEDULER=true`). Setting `numInstances > 1` would double-fire every trading tick and double-charge fees. Stay at 1 unless you've migrated to external Redis + Celery.
+- **Don't deploy to the free tier.** Free Web Services sleep after 15 min idle — your trading loop dies with them. Starter ($7) stays awake.
+- **Egress IP changes.** Bybit / Bitget keys with IP allowlists need a static outbound IP. Starter doesn't provide one — either remove IP restrictions on the exchange key, or upgrade to a plan with static egress.
 - **First deploy is also a migration.** `alembic upgrade head` runs in `startCommand`. If a migration fails, the backend crash-loops; check **Logs**, fix the migration, push.
-- **Free tier sleeping.** The worker MUST stay awake — don't downgrade it to free. The frontend can sleep without affecting trading.
 - **TLS.** Render terminates HTTPS for you; the Uvicorn process listens on plain HTTP behind their proxy. Don't set TLS env vars in the app.
+- **Cross-agent learning.** Every optimization run writes a `StrategyObservation` row. Future runs warm-start from the top observations across **all** agents — your fleet gets smarter as more agents run. To exempt an agent from contributing, set `ai_optimization_enabled=false` on it.
 
 ---
 

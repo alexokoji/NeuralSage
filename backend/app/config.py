@@ -58,10 +58,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     SYNC_DATABASE_URL: str = ""
 
-    # Redis / Celery
-    REDIS_URL: str = "redis://redis:6379/0"
+    # Redis / Celery. REDIS_URL is OPTIONAL: when blank, the app uses
+    # in-memory implementations for the rate limiter, market-data cache,
+    # and notification fan-out (single-instance deployments only).
+    REDIS_URL: str = ""
     CELERY_BROKER_URL: str = ""
     CELERY_RESULT_BACKEND: str = ""
+
+    # Run the trading loop / optimization / rollover in-process via
+    # APScheduler instead of dispatching to Celery. Default ON so a single
+    # FastAPI service can drive everything end to end on hosts like Render.
+    ENABLE_IN_PROCESS_SCHEDULER: bool = True
 
     # Security
     JWT_SECRET_KEY: str
