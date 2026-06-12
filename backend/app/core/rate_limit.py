@@ -20,10 +20,22 @@ def _key_func(request) -> str:
     return get_remote_address(request)
 
 
-_storage_uri = settings.REDIS_URL or "memory://"
+def _resolve_storage() -> str:
+    url = settings.REDIS_URL
+    if not url:
+        return "memory://"
+    try:
+        import redis as _r
+        c = _r.from_url(url, socket_connect_timeout=2, socket_timeout=2)
+        c.ping()
+        c.close()
+        return url
+    except Exception:
+        return "memory://"
+
 
 limiter = Limiter(
     key_func=_key_func,
-    storage_uri=_storage_uri,
+    storage_uri=_resolve_storage(),
     default_limits=[settings.RATE_LIMIT_DEFAULT],
 )

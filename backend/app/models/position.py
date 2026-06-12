@@ -1,53 +1,37 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Annotated, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.database import Base
+from beanie import Document, Indexed
+from pydantic import Field
 
 
-class Position(Base):
-    __tablename__ = "positions"
+class Position(Document):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    user_id: Annotated[uuid.UUID, Indexed()]
+    agent_id: Optional[uuid.UUID] = None
+    trade_id: Optional[uuid.UUID] = None
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL")
-    )
-    trade_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("trades.id", ondelete="CASCADE")
-    )
+    exchange: str
+    symbol: str
+    side: str
 
-    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    quantity: float
+    entry_price: float
+    current_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
 
-    quantity: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
-    entry_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
-    current_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
-    stop_loss: Mapped[float | None] = mapped_column(Numeric(20, 8))
-    take_profit: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_pct: float = 0.0
+    leverage: float = 1.0
+    margin_used: float = 0.0
+    is_open: Annotated[bool, Indexed()] = True
 
-    unrealized_pnl: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    unrealized_pnl_pct: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
-    leverage: Mapped[float] = mapped_column(Numeric(8, 2), default=1)
-    margin_used: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    is_open: Mapped[bool] = mapped_column(Boolean, default=True)
+    opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    user = relationship("User", back_populates="positions")
-
-    __table_args__ = (
-        CheckConstraint("side IN ('long','short')", name="ck_position_side"),
-        Index("idx_positions_open", "is_open"),
-    )
+    class Settings:
+        name = "positions"

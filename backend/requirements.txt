@@ -3,26 +3,38 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.5.2
 email-validator==2.2.0
-sqlalchemy==2.0.35
-alembic==1.13.3
-psycopg[binary]==3.2.3
-asyncpg==0.29.0
+
+# MongoDB
+motor==3.6.0
+beanie==1.26.0
+
+# Redis / Celery
 redis==5.1.1
 celery[redis]==5.4.0
 apscheduler==3.10.4
+
+# HTTP / WebSockets
 httpx==0.27.2
 websockets==13.1
+
+# Security
 cryptography==43.0.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.0
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.12
+
+# Rate limiting
 slowapi==0.1.9
+
+# Data / ML
 numpy==2.1.1
 pandas==2.2.3
 scikit-learn==1.5.2
 scikit-optimize==0.10.2
 ta==0.11.0
+
+# Utilities
 python-dotenv==1.0.1
 tenacity==9.0.0
 loguru==0.7.2

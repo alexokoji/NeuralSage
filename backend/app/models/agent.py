@@ -1,88 +1,60 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
-from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Integer,
-    Numeric,
-    String,
-    func,
-    text,
-)
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.database import Base
+from beanie import Document, Indexed
+from pydantic import BaseModel, Field
 
 
-class Agent(Base):
-    __tablename__ = "agents"
+class StrategyEmbed(BaseModel):
+    """Snapshot of the strategy embedded in the agent document."""
+    id: uuid.UUID
+    name: str
+    type: str
+    description: str = ""
+    default_params: dict[str, Any] = Field(default_factory=dict)
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("api_keys.id", ondelete="SET NULL")
-    )
-    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("strategies.id", ondelete="SET NULL")
-    )
 
-    name: Mapped[str] = mapped_column(String(120), nullable=False)
-    description: Mapped[str] = mapped_column(String, default="")
-    status: Mapped[str] = mapped_column(String(16), default="idle", index=True)
+class Agent(Document):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    user_id: Annotated[uuid.UUID, Indexed()]
+    api_key_id: Optional[uuid.UUID] = None
+    strategy_id: Optional[uuid.UUID] = None
+    strategy: Optional[StrategyEmbed] = None  # embedded for fast reads
 
-    assigned_capital: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    currency: Mapped[str] = mapped_column(String(16), default="USDT")
-    trading_pairs: Mapped[list[str]] = mapped_column(
-        ARRAY(String), server_default=text("ARRAY['BTCUSDT']::varchar[]")
-    )
-    timeframe: Mapped[str] = mapped_column(String(8), default="15m")
+    name: str
+    description: str = ""
+    status: Annotated[str, Indexed()] = "idle"
 
-    max_risk_per_trade: Mapped[float] = mapped_column(Numeric(6, 3), default=2.0)
-    daily_profit_target: Mapped[float] = mapped_column(Numeric(8, 3), default=3.0)
-    weekly_profit_target: Mapped[float] = mapped_column(Numeric(8, 3), default=10.0)
-    max_daily_loss: Mapped[float] = mapped_column(Numeric(8, 3), default=5.0)
-    max_concurrent_trades: Mapped[int] = mapped_column(Integer, default=3)
-    max_consecutive_losses: Mapped[int] = mapped_column(Integer, default=3)
+    assigned_capital: float = 0.0
+    currency: str = "USDT"
+    trading_pairs: list[str] = Field(default_factory=lambda: ["BTCUSDT"])
+    timeframe: str = "15m"
 
-    strategy_params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
-    ai_optimization_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    optimization_params: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, default=dict, server_default=text("'{}'::jsonb")
-    )
+    max_risk_per_trade: float = 2.0
+    daily_profit_target: float = 3.0
+    weekly_profit_target: float = 10.0
+    max_daily_loss: float = 5.0
+    max_concurrent_trades: int = 3
+    max_consecutive_losses: int = 3
 
-    total_pnl: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    total_trades: Mapped[int] = mapped_column(Integer, default=0)
-    winning_trades: Mapped[int] = mapped_column(Integer, default=0)
-    current_day_pnl: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    current_week_pnl: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
-    confidence_score: Mapped[float] = mapped_column(Numeric(6, 3), default=50.0)
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
+    ai_optimization_enabled: bool = True
+    optimization_params: dict[str, Any] = Field(default_factory=dict)
 
-    last_trade_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    total_pnl: float = 0.0
+    total_trades: int = 0
+    winning_trades: int = 0
+    current_day_pnl: float = 0.0
+    current_week_pnl: float = 0.0
+    confidence_score: float = 50.0
 
-    user = relationship("User", back_populates="agents")
-    strategy = relationship("Strategy", lazy="joined")
-    api_key = relationship("ApiKey", lazy="joined")
+    last_trade_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (
-        CheckConstraint("status IN ('idle','active','paused','stopped','error')", name="ck_agent_status"),
-        CheckConstraint("assigned_capital >= 0", name="ck_agent_capital_nonneg"),
-        CheckConstraint("max_risk_per_trade <= 5.0", name="ck_agent_risk_cap"),
-        CheckConstraint(
-            "timeframe IN ('1m','3m','5m','15m','30m','1h','4h','1d')", name="ck_agent_timeframe"
-        ),
-        CheckConstraint("confidence_score BETWEEN 0 AND 100", name="ck_agent_confidence"),
-    )
+    class Settings:
+        name = "agents"

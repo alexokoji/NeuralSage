@@ -13,21 +13,22 @@ from slowapi.errors import RateLimitExceeded
 from app.api.v1 import api_router
 from app.config import settings
 from app.core.rate_limit import limiter
-from app.database import engine
+from app.database import close_db, init_db
 from app.seed import seed_strategies
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialise MongoDB / Beanie.
+    await init_db()
+
     # Seed system strategies on first boot.
     try:
         await seed_strategies()
     except Exception as exc:  # noqa: BLE001
         logger.warning("strategy seed skipped: {}", exc)
 
-    # Drive the trading loop, optimization sweep, and daily rollover
-    # in-process. Set ENABLE_IN_PROCESS_SCHEDULER=false to fall back to
-    # an externally-run Celery worker instead.
+    # Drive the trading loop, optimization sweep, and daily rollover in-process.
     if settings.ENABLE_IN_PROCESS_SCHEDULER:
         try:
             from app.scheduler import shutdown as _sched_shutdown
@@ -43,7 +44,7 @@ async def lifespan(app: FastAPI):
     yield
 
     _sched_shutdown()
-    await engine.dispose()
+    await close_db()
 
 
 app = FastAPI(

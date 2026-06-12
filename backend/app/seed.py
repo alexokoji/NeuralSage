@@ -1,9 +1,6 @@
 """Idempotent seed of system strategies on app start."""
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from app.database import SessionLocal
 from app.models.strategy import Strategy
 
 SYSTEM_STRATEGIES = [
@@ -67,11 +64,8 @@ SYSTEM_STRATEGIES = [
 
 
 async def seed_strategies() -> None:
-    async with SessionLocal() as db:
-        existing = (await db.execute(select(Strategy.type))).scalars().all()
-        present = set(existing)
-        for spec in SYSTEM_STRATEGIES:
-            if spec["type"] in present:
-                continue
-            db.add(Strategy(**spec, is_system=True))
-        await db.commit()
+    for spec in SYSTEM_STRATEGIES:
+        exists = await Strategy.find_one(Strategy.type == spec["type"])
+        if exists:
+            continue
+        await Strategy(**spec, is_system=True).insert()

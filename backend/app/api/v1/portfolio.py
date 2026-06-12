@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
-from app.database import get_db
 from app.models.agent import Agent
 from app.models.api_key import ApiKey
 from app.models.position import Position
@@ -24,11 +21,8 @@ router = APIRouter()
 
 
 @router.get("/overview", response_model=PortfolioOverview)
-async def overview(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> PortfolioOverview:
-    keys = (await db.execute(select(ApiKey).where(ApiKey.user_id == user.id))).scalars().all()
+async def overview(user: User = Depends(get_current_user)) -> PortfolioOverview:
+    keys = await ApiKey.find(ApiKey.user_id == user.id).to_list()
 
     exchanges: list[ExchangeBalance] = []
     total_usd = 0.0
@@ -42,10 +36,9 @@ async def overview(
             finally:
                 await client.close()
         except (ExchangeError, PermissionError) as exc:
-            # Surface as empty balance set; UI shows the error from /verify.
             balances = []
             k.balance_cache = {"error": str(exc)}
-            await db.commit()
+            await k.save()
             continue
 
         entries = [
@@ -56,6 +49,7 @@ async def overview(
         total_usd += exch_total
         k.balance_cache = {b.asset: float(b.total) for b in balances}
         k.balance_updated_at = datetime.now(timezone.utc)
+        await k.save()
         exchanges.append(
             ExchangeBalance(
                 api_key_id=str(k.id),
@@ -65,29 +59,20 @@ async def overview(
                 updated_at=datetime.now(timezone.utc).isoformat(),
             )
         )
-    await db.commit()
 
-    open_positions_count = (
-        await db.execute(
-            select(func.count(Position.id)).where(
-                Position.user_id == user.id, Position.is_open.is_(True)
-            )
-        )
-    ).scalar_one()
-    active_agents_count = (
-        await db.execute(
-            select(func.count(Agent.id)).where(Agent.user_id == user.id, Agent.status == "active")
-        )
-    ).scalar_one()
+    open_positions_count = await Position.find(
+        Position.user_id == user.id,
+        Position.is_open == True,  # noqa: E712
+    ).count()
 
-    pnl_total = (
-        await db.execute(select(func.coalesce(func.sum(Agent.total_pnl), 0)).where(Agent.user_id == user.id))
-    ).scalar_one() or 0.0
-    pnl_today = (
-        await db.execute(
-            select(func.coalesce(func.sum(Agent.current_day_pnl), 0)).where(Agent.user_id == user.id)
-        )
-    ).scalar_one() or 0.0
+    active_agents_count = await Agent.find(
+        Agent.user_id == user.id,
+        Agent.status == "active",
+    ).count()
+
+    agents = await Agent.find(Agent.user_id == user.id).to_list()
+    pnl_total = sum(float(a.total_pnl or 0) for a in agents)
+    pnl_today = sum(float(a.current_day_pnl or 0) for a in agents)
 
     cap_basis = total_usd if total_usd > 0 else 1.0
     return PortfolioOverview(

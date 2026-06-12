@@ -4,11 +4,8 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.database import get_db
 from app.models.api_key import ApiKey
 from app.models.position import Position
 from app.models.trade import Trade
@@ -28,35 +25,25 @@ router = APIRouter()
 async def list_trades(
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Trade).where(Trade.user_id == user.id).order_by(Trade.created_at.desc()).limit(limit)
-    )
-    return result.scalars().all()
+    return await Trade.find(Trade.user_id == user.id).sort(-Trade.created_at).limit(limit).to_list()
 
 
 @router.get("/positions", response_model=list[PositionPublic])
-async def list_positions(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(Position)
-        .where(Position.user_id == user.id, Position.is_open.is_(True))
-        .order_by(Position.opened_at.desc())
-    )
-    return result.scalars().all()
+async def list_positions(user: User = Depends(get_current_user)):
+    return await Position.find(
+        Position.user_id == user.id,
+        Position.is_open == True,  # noqa: E712
+    ).sort(-Position.opened_at).to_list()
 
 
 @router.post("/manual", response_model=TradePublic, status_code=status.HTTP_201_CREATED)
 async def place_manual_order(
     body: ManualOrderRequest,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    api_key = await db.get(ApiKey, body.api_key_id)
-    if not api_key or api_key.user_id != user.id:
+    api_key = await ApiKey.find_one(ApiKey.id == body.api_key_id, ApiKey.user_id == user.id)
+    if not api_key:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid api_key_id")
     if "trade" not in (api_key.permissions or []):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "api key cannot trade")
@@ -99,27 +86,21 @@ async def place_manual_order(
         risk_checks={"manual": True},
         opened_at=datetime.now(timezone.utc),
     )
-    db.add(trade)
-    await db.commit()
-    await db.refresh(trade)
+    await trade.insert()
     return trade
 
 
 @router.post("/{trade_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_trade(
-    trade_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    trade = await db.get(Trade, trade_id)
-    if not trade or trade.user_id != user.id:
+async def cancel_trade(trade_id: uuid.UUID, user: User = Depends(get_current_user)):
+    trade = await Trade.find_one(Trade.id == trade_id, Trade.user_id == user.id)
+    if not trade:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trade not found")
     if trade.status not in ("open", "pending"):
         raise HTTPException(status.HTTP_409_CONFLICT, "trade is not cancellable")
     if not trade.api_key_id or not trade.exchange_order_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing exchange data")
 
-    api_key = await db.get(ApiKey, trade.api_key_id)
+    api_key = await ApiKey.get(trade.api_key_id)
     client = build_client(api_key)
     try:
         try:
@@ -128,6 +109,7 @@ async def cancel_trade(
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     finally:
         await client.close()
+
     trade.status = "cancelled"
     trade.closed_at = datetime.now(timezone.utc)
-    await db.commit()
+    await trade.save()

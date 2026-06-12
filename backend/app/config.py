@@ -2,43 +2,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, List
+from typing import List
 
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _normalize_postgres_url(url: str, *, driver: str) -> str:
-    """Translate a bare Postgres URL into one with the requested SQLAlchemy driver.
-
-    Render injects `postgresql://...` (and historically `postgres://...`) into
-    DATABASE_URL. We split that into:
-      * `postgresql+asyncpg://...`  for the FastAPI app (async)
-      * `postgresql+psycopg://...`  for Alembic + Celery tasks (sync)
-
-    Also rewrites `sslmode=require` → `ssl=require` for asyncpg, which doesn't
-    accept libpq's `sslmode` parameter.
-    """
-    if not url:
-        return url
-
-    scheme, sep, rest = url.partition("://")
-    if not sep:
-        return url
-
-    base = scheme.split("+", 1)[0]
-    if base not in ("postgres", "postgresql"):
-        return url
-
-    out = f"postgresql+{driver}://{rest}"
-
-    if driver == "asyncpg":
-        out = out.replace("sslmode=require", "ssl=require")
-        out = out.replace("sslmode=disable", "ssl=disable")
-        out = out.replace("sslmode=verify-full", "ssl=verify-full")
-        out = out.replace("sslmode=prefer", "ssl=prefer")
-
-    return out
 
 
 class Settings(BaseSettings):
@@ -52,22 +19,17 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     APP_CORS_ORIGINS: str = "http://localhost:3000"
 
-    # Database — DATABASE_URL is the only required input. SYNC_DATABASE_URL is
-    # derived if absent, so Render's auto-injected `postgresql://...` works
-    # without further wiring.
-    DATABASE_URL: str
-    SYNC_DATABASE_URL: str = ""
+    # MongoDB — only MONGODB_URL is required.
+    # Use a free cluster at https://cloud.mongodb.com or a local mongod instance.
+    MONGODB_URL: str = "mongodb://localhost:27017/neuraltrade"
+    MONGODB_DB_NAME: str = "neuraltrade"
 
-    # Redis / Celery. REDIS_URL is OPTIONAL: when blank, the app uses
-    # in-memory implementations for the rate limiter, market-data cache,
-    # and notification fan-out (single-instance deployments only).
+    # Redis / Celery (optional — leave blank for in-process single-instance mode)
     REDIS_URL: str = ""
     CELERY_BROKER_URL: str = ""
     CELERY_RESULT_BACKEND: str = ""
 
-    # Run the trading loop / optimization / rollover in-process via
-    # APScheduler instead of dispatching to Celery. Default ON so a single
-    # FastAPI service can drive everything end to end on hosts like Render.
+    # Run the trading loop / optimization / rollover in-process via APScheduler.
     ENABLE_IN_PROCESS_SCHEDULER: bool = True
 
     # Security
@@ -77,14 +39,12 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_DAYS: int = 7
     ENCRYPTION_KEY: str
 
-    # Groq Cloud — the AI brain for trading analysis, signal validation,
-    # parameter optimisation, and the AI assistant.
-    # Free tier available — get your key at https://console.groq.com (no card needed).
-    GROQ_API_KEY: str = ""
-
     # Rate limiting
     RATE_LIMIT_DEFAULT: str = "100/minute"
     RATE_LIMIT_AUTH: str = "10/minute"
+
+    # Groq Cloud — AI brain (free tier at https://console.groq.com)
+    GROQ_API_KEY: str = ""
 
     # Exchanges
     BYBIT_REST_URL: str = "https://api.bybit.com"
@@ -103,38 +63,23 @@ class Settings(BaseSettings):
     OPTIMIZATION_INTERVAL_HOURS: int = 6
 
     @model_validator(mode="after")
-    def _normalize_urls(self) -> "Settings":
-        # Snapshot the raw (possibly bare) Postgres URL before mutating it,
-        # so we can derive the sync variant from the same source.
-        raw_db = self.DATABASE_URL
-        raw_sync = self.SYNC_DATABASE_URL
-
-        self.DATABASE_URL = _normalize_postgres_url(raw_db, driver="asyncpg")
-
-        if raw_sync:
-            self.SYNC_DATABASE_URL = _normalize_postgres_url(raw_sync, driver="psycopg")
-        else:
-            self.SYNC_DATABASE_URL = _normalize_postgres_url(raw_db, driver="psycopg")
-
-        # Default Celery broker/result to REDIS_URL so a single Render Key
-        # Value instance can serve all three roles in tight deployments.
+    def _defaults(self) -> "Settings":
         if not self.CELERY_BROKER_URL:
             self.CELERY_BROKER_URL = self.REDIS_URL
         if not self.CELERY_RESULT_BACKEND:
             self.CELERY_RESULT_BACKEND = self.REDIS_URL
-
         return self
 
     @property
     def cors_origins(self) -> List[str]:
         return [o.strip() for o in self.APP_CORS_ORIGINS.split(",") if o.strip()]
 
+    from pydantic import field_validator
+
     @field_validator("ENCRYPTION_KEY")
     @classmethod
     def _validate_encryption_key(cls, v: str) -> str:
-        # Must decode to 32 raw bytes for AES-256.
         import base64
-
         try:
             raw = base64.urlsafe_b64decode(v.encode())
         except Exception as exc:

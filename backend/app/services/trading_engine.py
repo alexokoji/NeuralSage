@@ -1,4 +1,4 @@
-"""Trading Engine.
+"""Trading Engine — MongoDB/Beanie edition.
 
 Pipeline for one tick of one agent:
   1. Pull candles from the agent's exchange.
@@ -6,11 +6,9 @@ Pipeline for one tick of one agent:
   3. If the signal is enter/exit:
      a. Run RiskEngine.evaluate_entry (entries only).
      b. Place the order via the exchange client.
-     c. Persist a Trade row + (for entries) a Position row.
+     c. Persist a Trade doc + (for entries) a Position doc.
      d. Update agent counters and emit a notification.
   4. If no actionable signal, persist nothing.
-
-Every trade is logged with the risk_checks payload that approved it.
 """
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
 from app.models.api_key import ApiKey
@@ -35,10 +32,7 @@ from app.services.strategy.indicators import candles_to_df
 
 
 class TradingEngine:
-    """One-shot per-agent execution. Designed for the Celery worker tick."""
-
-    def __init__(self, db: AsyncSession) -> None:
-        self.db = db
+    """One-shot per-agent execution. Designed for the scheduler tick."""
 
     async def run_agent_tick(self, agent: Agent, api_key: ApiKey) -> dict[str, Any]:
         if agent.status != "active":
@@ -58,7 +52,6 @@ class TradingEngine:
         return {"ok": True}
 
     async def _tick_symbol(self, agent: Agent, api_key, strategy, client, symbol: str) -> None:
-        # 1) Candles
         try:
             raw = await client.get_candles(symbol, agent.timeframe, limit=200)
         except ExchangeError as exc:
@@ -78,7 +71,6 @@ class TradingEngine:
         )
         signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
-        # --- Grok AI validation: review signal against live candle context ---
         signal = await grok_analyst.validate_signal(
             signal,
             df,
@@ -94,27 +86,22 @@ class TradingEngine:
                 "in_position": ctx.in_position,
             },
         )
-        # ---------------------------------------------------------------------
 
         last_price = float(df["close"].iloc[-1])
 
-        # Hold / no action.
         if signal.action == "hold":
             return
 
-        # 2) Exit handling.
         if signal.action == "exit" and open_position is not None:
             await self._close_position(agent, api_key, client, open_position, last_price, signal.reason)
             return
 
-        # 3) Entry: risk-engine gating.
         if signal.action in ("enter_long", "enter_short") and open_position is None:
             side: str = "long" if signal.action == "enter_long" else "short"
             sl_pct = signal.suggested_stop_loss_pct or 1.5
             tp_pct = signal.suggested_take_profit_pct or 3.0
 
             decision = await RiskEngine.evaluate_entry(
-                self.db,
                 agent,
                 entry_price=last_price,
                 stop_loss_pct=sl_pct,
@@ -122,7 +109,6 @@ class TradingEngine:
             )
             if not decision.approved:
                 await RiskEngine.log_risk_event(
-                    self.db,
                     user_id=agent.user_id,
                     agent_id=agent.id,
                     event_type=decision.code if decision.code != "ok" else "api_error",
@@ -152,17 +138,13 @@ class TradingEngine:
                 },
             )
 
-    async def _open_position(self, agent_id, symbol: str) -> Position | None:
-        from sqlalchemy import select
-
-        result = await self.db.execute(
-            select(Position).where(
-                Position.agent_id == agent_id,
-                Position.symbol == symbol,
-                Position.is_open.is_(True),
-            )
+    @staticmethod
+    async def _open_position(agent_id, symbol: str) -> Position | None:
+        return await Position.find_one(
+            Position.agent_id == agent_id,
+            Position.symbol == symbol,
+            Position.is_open == True,  # noqa: E712
         )
-        return result.scalar_one_or_none()
 
     async def _open_trade(
         self,
@@ -203,7 +185,6 @@ class TradingEngine:
             placed = await client.place_order(order)
         except ExchangeError as exc:
             await RiskEngine.log_risk_event(
-                self.db,
                 user_id=agent.user_id,
                 agent_id=agent.id,
                 event_type="api_error",
@@ -236,8 +217,8 @@ class TradingEngine:
             risk_checks=risk_payload,
             opened_at=datetime.now(timezone.utc),
         )
-        self.db.add(trade)
-        await self.db.flush()
+        await trade.insert()
+
         position = Position(
             user_id=agent.user_id,
             agent_id=agent.id,
@@ -251,16 +232,14 @@ class TradingEngine:
             stop_loss=sl_price,
             take_profit=tp_price,
         )
-        self.db.add(position)
+        await position.insert()
 
         agent.total_trades = (agent.total_trades or 0) + 1
         agent.last_trade_at = datetime.now(timezone.utc)
         agent.confidence_score = max(0, min(100, 50 + (signal.confidence - 0.5) * 100))
-
-        await self.db.commit()
+        await agent.save()
 
         await NotificationService.create(
-            self.db,
             user_id=agent.user_id,
             type="trade_opened",
             title=f"{agent.name} opened {side} {symbol}",
@@ -292,7 +271,6 @@ class TradingEngine:
             await client.place_order(order)
         except ExchangeError as exc:
             await RiskEngine.log_risk_event(
-                self.db,
                 user_id=agent.user_id,
                 agent_id=agent.id,
                 event_type="api_error",
@@ -307,16 +285,14 @@ class TradingEngine:
         gross = (last_price - entry_price) * qty
         if position.side == "short":
             gross = -gross
+
         position.is_open = False
         position.current_price = last_price
         position.unrealized_pnl = gross
         position.unrealized_pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
+        await position.save()
 
-        # Locate the originating trade and close it.
-        from sqlalchemy import select
-
-        trade_result = await self.db.execute(select(Trade).where(Trade.id == position.trade_id))
-        trade = trade_result.scalar_one_or_none()
+        trade = await Trade.get(position.trade_id)
         if trade:
             trade.exit_price = last_price
             trade.pnl = gross
@@ -324,17 +300,16 @@ class TradingEngine:
             trade.status = "filled"
             trade.closed_at = datetime.now(timezone.utc)
             trade.notes = reason
+            await trade.save()
 
         agent.total_pnl = float(agent.total_pnl or 0) + gross
         agent.current_day_pnl = float(agent.current_day_pnl or 0) + gross
         agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
-
-        await self.db.commit()
+        await agent.save()
 
         await NotificationService.create(
-            self.db,
             user_id=agent.user_id,
             type="trade_closed",
             title=f"{agent.name} closed {position.side} {position.symbol}",

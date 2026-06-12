@@ -1,14 +1,9 @@
 # NOTE: do not add `from __future__ import annotations` here.
-# slowapi's `@limiter.limit` wrapper interacts badly with PEP 563
-# stringified annotations: FastAPI's `get_type_hints()` cannot resolve
-# `RegisterRequest`/`LoginRequest` from the wrapped function's globals,
-# producing `PydanticUndefinedAnnotation: name 'RegisterRequest' is not defined`
-# at app startup. Keeping annotations as real objects sidesteps the issue.
+# slowapi's @limiter.limit wrapper interacts badly with PEP 563
+# stringified annotations at app startup.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.config import settings
@@ -20,7 +15,6 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.database import get_db
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -43,26 +37,23 @@ def _token_response(user_id: uuid.UUID) -> TokenResponse:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(settings.RATE_LIMIT_AUTH)
-async def register(request: Request, body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    existing = await db.execute(select(User).where(User.email == body.email))
-    if existing.scalar_one_or_none():
+async def register(request: Request, body: RegisterRequest) -> TokenResponse:
+    existing = await User.find_one(User.email == body.email)
+    if existing:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="email already registered")
     user = User(
         email=body.email,
         full_name=body.full_name,
         hashed_password=hash_password(body.password),
     )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
+    await user.insert()
     return _token_response(user.id)
 
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit(settings.RATE_LIMIT_AUTH)
-async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
+async def login(request: Request, body: LoginRequest) -> TokenResponse:
+    user = await User.find_one(User.email == body.email)
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     if not user.is_active:

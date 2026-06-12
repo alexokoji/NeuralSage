@@ -4,12 +4,9 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.database import get_db
-from app.models.agent import Agent
+from app.models.agent import Agent, StrategyEmbed
 from app.models.api_key import ApiKey
 from app.models.strategy import Strategy
 from app.models.user import User
@@ -25,43 +22,36 @@ router = APIRouter()
 
 
 @router.get("/strategies", response_model=list[StrategyPublic])
-async def list_strategies(
-    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(select(Strategy).order_by(Strategy.name))
-    return result.scalars().all()
+async def list_strategies(user: User = Depends(get_current_user)):
+    return await Strategy.find_all().sort(+Strategy.name).to_list()
 
 
 @router.get("", response_model=list[AgentPublic])
-async def list_agents(
-    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(
-        select(Agent).where(Agent.user_id == user.id).order_by(Agent.created_at.desc())
-    )
-    return result.scalars().all()
+async def list_agents(user: User = Depends(get_current_user)):
+    return await Agent.find(Agent.user_id == user.id).sort(-Agent.created_at).to_list()
 
 
 @router.post("", response_model=AgentPublic, status_code=status.HTTP_201_CREATED)
-async def create_agent(
-    body: AgentCreate,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    # Validate ownership of the api_key + strategy.
-    api_key = await db.get(ApiKey, body.api_key_id)
-    if not api_key or api_key.user_id != user.id:
+async def create_agent(body: AgentCreate, user: User = Depends(get_current_user)):
+    api_key = await ApiKey.find_one(ApiKey.id == body.api_key_id, ApiKey.user_id == user.id)
+    if not api_key:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid api_key_id")
-    strategy = await db.get(Strategy, body.strategy_id)
+    strategy = await Strategy.get(body.strategy_id)
     if not strategy:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid strategy_id")
 
-    # Defaults from strategy if user didn't override.
     params = {**(strategy.default_params or {}), **(body.strategy_params or {})}
     agent = Agent(
         user_id=user.id,
         api_key_id=body.api_key_id,
         strategy_id=body.strategy_id,
+        strategy=StrategyEmbed(
+            id=strategy.id,
+            name=strategy.name,
+            type=strategy.type,
+            description=strategy.description or "",
+            default_params=strategy.default_params or {},
+        ),
         name=body.name,
         description=body.description,
         assigned_capital=body.assigned_capital,
@@ -77,26 +67,20 @@ async def create_agent(
         strategy_params=params,
         ai_optimization_enabled=body.ai_optimization_enabled,
     )
-    db.add(agent)
-    await db.commit()
-    await db.refresh(agent)
+    await agent.insert()
     return agent
 
 
-async def _load_agent(db: AsyncSession, agent_id: uuid.UUID, user: User) -> Agent:
-    agent = await db.get(Agent, agent_id)
-    if not agent or agent.user_id != user.id:
+async def _load_agent(agent_id: uuid.UUID, user: User) -> Agent:
+    agent = await Agent.find_one(Agent.id == agent_id, Agent.user_id == user.id)
+    if not agent:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     return agent
 
 
 @router.get("/{agent_id}", response_model=AgentPublic)
-async def get_agent(
-    agent_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    return await _load_agent(db, agent_id, user)
+async def get_agent(agent_id: uuid.UUID, user: User = Depends(get_current_user)):
+    return await _load_agent(agent_id, user)
 
 
 @router.patch("/{agent_id}", response_model=AgentPublic)
@@ -104,29 +88,22 @@ async def update_agent(
     agent_id: uuid.UUID,
     body: AgentUpdate,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    agent = await _load_agent(db, agent_id, user)
+    agent = await _load_agent(agent_id, user)
     if agent.status == "active":
         raise HTTPException(
             status.HTTP_409_CONFLICT, "pause the agent before editing its parameters"
         )
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(agent, field, value)
-    await db.commit()
-    await db.refresh(agent)
+    await agent.save()
     return agent
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent(
-    agent_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    agent = await _load_agent(db, agent_id, user)
-    await db.delete(agent)
-    await db.commit()
+async def delete_agent(agent_id: uuid.UUID, user: User = Depends(get_current_user)):
+    agent = await _load_agent(agent_id, user)
+    await agent.delete()
 
 
 @router.post("/{agent_id}/control", response_model=AgentPublic)
@@ -134,9 +111,8 @@ async def control_agent(
     agent_id: uuid.UUID,
     body: AgentControlAction,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    agent = await _load_agent(db, agent_id, user)
+    agent = await _load_agent(agent_id, user)
     if body.action == "start":
         if not agent.api_key_id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "agent has no api key")
@@ -146,8 +122,7 @@ async def control_agent(
         agent.started_at = datetime.now(timezone.utc)
     elif body.action == "pause":
         agent.status = "paused"
-    else:  # stop
+    else:
         agent.status = "stopped"
-    await db.commit()
-    await db.refresh(agent)
+    await agent.save()
     return agent

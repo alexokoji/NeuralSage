@@ -1,4 +1,4 @@
-"""Notification persistence and (optional) Redis pub/sub fanout.
+"""Notification persistence and (optional) Redis pub/sub fanout — MongoDB/Beanie edition.
 
 Falls back silently when REDIS_URL is unset — the DB row is still
 persisted, just no real-time broadcast. UIs polling `GET /notifications`
@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.notification import Notification
@@ -22,8 +20,7 @@ def _redis() -> Any | None:
     if not settings.REDIS_URL:
         return None
     if _redis_client is None:
-        import redis.asyncio as redis  # local import — only paid when Redis is configured
-
+        import redis.asyncio as redis
         _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     return _redis_client
 
@@ -31,7 +28,6 @@ def _redis() -> Any | None:
 class NotificationService:
     @staticmethod
     async def create(
-        db: AsyncSession,
         *,
         user_id,
         type: str,
@@ -46,26 +42,21 @@ class NotificationService:
             message=message,
             data=data or {},
         )
-        db.add(n)
-        await db.commit()
-        await db.refresh(n)
+        await n.insert()
 
-        # Best-effort fanout — failures (or no Redis at all) are silent.
         client = _redis()
         if client is not None:
             try:
                 await client.publish(
                     f"notif:user:{user_id}",
-                    json.dumps(
-                        {
-                            "id": str(n.id),
-                            "type": n.type,
-                            "title": n.title,
-                            "message": n.message,
-                            "data": n.data,
-                            "created_at": n.created_at.isoformat() if n.created_at else None,
-                        }
-                    ),
+                    json.dumps({
+                        "id": str(n.id),
+                        "type": n.type,
+                        "title": n.title,
+                        "message": n.message,
+                        "data": n.data,
+                        "created_at": n.created_at.isoformat() if n.created_at else None,
+                    }),
                 )
             except Exception:  # noqa: BLE001
                 pass

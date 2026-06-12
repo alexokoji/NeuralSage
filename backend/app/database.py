@@ -1,33 +1,55 @@
-"""Async SQLAlchemy engine, session, and Base."""
+"""MongoDB connection and Beanie initialisation."""
 from __future__ import annotations
 
-from typing import AsyncGenerator
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from motor.motor_asyncio import AsyncIOMotorClient
+from beanie import init_beanie
 
 from app.config import settings
 
-
-class Base(DeclarativeBase):
-    pass
+_motor_client: AsyncIOMotorClient | None = None
 
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.APP_DEBUG and settings.APP_ENV == "development",
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
-
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+def get_motor_client() -> AsyncIOMotorClient:
+    global _motor_client
+    if _motor_client is None:
+        _motor_client = AsyncIOMotorClient(settings.MONGODB_URL)
+    return _motor_client
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with SessionLocal() as session:
-        try:
-            yield session
-        except Exception:
-            await session.rollback()
-            raise
+async def init_db() -> None:
+    """Initialise Beanie with all document models. Called once at app startup."""
+    from app.models.user import User
+    from app.models.api_key import ApiKey
+    from app.models.strategy import Strategy
+    from app.models.agent import Agent
+    from app.models.trade import Trade
+    from app.models.position import Position
+    from app.models.agent_performance import AgentPerformance
+    from app.models.risk_event import RiskEvent
+    from app.models.notification import Notification
+    from app.models.strategy_observation import StrategyObservation
+
+    client = get_motor_client()
+    db = client[settings.MONGODB_DB_NAME]
+    await init_beanie(
+        database=db,
+        document_models=[
+            User,
+            ApiKey,
+            Strategy,
+            Agent,
+            Trade,
+            Position,
+            AgentPerformance,
+            RiskEvent,
+            Notification,
+            StrategyObservation,
+        ],
+    )
+
+
+async def close_db() -> None:
+    global _motor_client
+    if _motor_client is not None:
+        _motor_client.close()
+        _motor_client = None

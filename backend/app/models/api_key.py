@@ -1,50 +1,34 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, func, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.database import Base
+from beanie import Document, Indexed
+from pydantic import Field
 
 
-class ApiKey(Base):
-    __tablename__ = "api_keys"
+class ApiKey(Document):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    user_id: Annotated[uuid.UUID, Indexed()]
+    exchange: str
+    label: str = ""
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), default="")
+    encrypted_api_key: str
+    encrypted_api_secret: str
+    encryption_iv: str
 
-    # AES-256-GCM ciphertext + nonce, stored base64-encoded.
-    encrypted_api_key: Mapped[str] = mapped_column(String, nullable=False)
-    encrypted_api_secret: Mapped[str] = mapped_column(String, nullable=False)
-    encryption_iv: Mapped[str] = mapped_column(String, nullable=False)
+    permissions: list[str] = Field(default_factory=lambda: ["read", "trade"])
+    is_active: bool = True
+    is_testnet: bool = False
+    verified: bool = False
+    last_verified_at: Optional[datetime] = None
 
-    permissions: Mapped[list[str]] = mapped_column(
-        ARRAY(String), server_default=text("ARRAY['read','trade']::varchar[]")
-    )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_testnet: Mapped[bool] = mapped_column(Boolean, default=False)
-    verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    balance_cache: dict[str, Any] = Field(default_factory=dict)
+    balance_updated_at: Optional[datetime] = None
 
-    balance_cache: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
-    balance_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    user = relationship("User", back_populates="api_keys")
-
-    __table_args__ = (
-        CheckConstraint("exchange IN ('bybit','bitget','bybit_testnet')", name="ck_api_keys_exchange"),
-        CheckConstraint("NOT ('withdraw' = ANY(permissions))", name="ck_api_keys_no_withdraw"),
-    )
+    class Settings:
+        name = "api_keys"
