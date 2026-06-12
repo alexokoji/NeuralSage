@@ -168,6 +168,19 @@ export const api = {
     request<Notification[]>('GET', `/api/v1/notifications?unread_only=${unreadOnly}`),
   markNotifRead: (id: string) => request<void>('POST', `/api/v1/notifications/${id}/read`),
   markAllNotifsRead: () => request<void>('POST', '/api/v1/notifications/read-all'),
+
+  // ----- Grok AI -----
+  aiStatus: () =>
+    request<{ grok_available: boolean; model: string }>('GET', '/api/v1/ai/status'),
+  aiChat: (messages: { role: string; content: string }[], extras?: { portfolio_context?: unknown; active_agents?: unknown[] }) =>
+    request<{ reply: string }>('POST', '/api/v1/ai/chat', { messages, ...extras }),
+  fleetInsight: (strategyType: string, symbol?: string) => {
+    const qs = symbol ? `?strategy_type=${strategyType}&symbol=${symbol}` : `?strategy_type=${strategyType}`;
+    return request<{ strategy_type: string; symbol: string | null; insight: string }>(
+      'GET',
+      `/api/v1/ai/fleet-insight${qs}`,
+    );
+  },
 };
 
 export { ApiError };

@@ -27,6 +27,7 @@ from app.models.position import Position
 from app.models.trade import Trade
 from app.services.exchange import OrderRequest, build_client
 from app.services.exchange.base import ExchangeError
+import app.services.grok_analyst as grok_analyst
 from app.services.notifications import NotificationService
 from app.services.risk_engine import RiskEngine
 from app.services.strategy import StrategyContext, get_strategy
@@ -76,6 +77,25 @@ class TradingEngine:
             position_side=open_position.side if open_position else None,
         )
         signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
+
+        # --- Grok AI validation: review signal against live candle context ---
+        signal = await grok_analyst.validate_signal(
+            signal,
+            df,
+            symbol=symbol,
+            timeframe=agent.timeframe,
+            strategy_type=strategy.type,
+            strategy_params=agent.strategy_params or {},
+            agent_context={
+                "agent_id": str(agent.id),
+                "total_trades": agent.total_trades,
+                "total_pnl": float(agent.total_pnl or 0),
+                "confidence_score": float(agent.confidence_score or 50),
+                "in_position": ctx.in_position,
+            },
+        )
+        # ---------------------------------------------------------------------
+
         last_price = float(df["close"].iloc[-1])
 
         # Hold / no action.

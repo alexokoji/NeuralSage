@@ -15,7 +15,8 @@ from app.database import SessionLocal
 from app.models.agent import Agent
 from app.models.agent_performance import AgentPerformance
 from app.models.api_key import ApiKey
-from app.services.ai_optimizer import optimize_strategy
+from app.services.ai_optimizer import optimize_strategy_async
+import app.services.grok_analyst as grok_analyst
 from app.services.exchange import build_client
 from app.services.learning import LearningService
 from app.services.strategy import get_strategy
@@ -119,7 +120,15 @@ async def run_optimization_sweep() -> dict:
                 )
 
                 base = {**(strat.default_params or {}), **(a.strategy_params or {})}
-                result = optimize_strategy(strat, df, base, warm_starts=warm_starts, n_calls=20)
+                result = await optimize_strategy_async(
+                    strat,
+                    df,
+                    base,
+                    symbol=symbol,
+                    timeframe=a.timeframe,
+                    warm_starts=warm_starts,
+                    n_calls=20,
+                )
 
                 # Persist the new best params on the agent.
                 a.strategy_params = result.best_params
@@ -162,6 +171,30 @@ async def run_optimization_sweep() -> dict:
     logger.info(
         "optimization sweep: tuned={} warm_starts_used_total={}", tuned, seeded_total
     )
+
+    # Generate a Grok fleet insight summary (best-effort; failure is non-fatal).
+    try:
+        async with SessionLocal() as db:
+            # Collect observations for the most common strategy in this sweep
+            if agents:
+                strategy_types = list({a.strategy.type for a in agents if a.strategy})
+                for stype in strategy_types[:2]:
+                    top = await LearningService.fleet_best(db, strategy_type=stype, limit=10)
+                    if top:
+                        obs_dicts = [
+                            {
+                                "params": o.params,
+                                "backtest_score": float(o.backtest_score or 0),
+                                "realized_pnl": float(o.realized_pnl or 0),
+                                "realized_trades": int(o.realized_trades or 0),
+                            }
+                            for o in top
+                        ]
+                        insight = await grok_analyst.fleet_insight(obs_dicts, strategy_type=stype)
+                        logger.info("Grok fleet insight [{}]: {}", stype, insight)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Grok fleet insight skipped: {}", exc)
+
     return {"agents_tuned": tuned, "warm_starts_used_total": seeded_total}
 
 

@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_DAYS: int = 7
     ENCRYPTION_KEY: str
 
+    # Groq Cloud — the AI brain for trading analysis, signal validation,
+    # parameter optimisation, and the AI assistant.
+    # Free tier available — get your key at https://console.groq.com (no card needed).
+    GROQ_API_KEY: str = ""
+
     # Rate limiting
     RATE_LIMIT_DEFAULT: str = "100/minute"
     RATE_LIMIT_AUTH: str = "10/minute"
