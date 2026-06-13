@@ -90,6 +90,11 @@ class AgentPublic(BaseModel):
     started_at: datetime | None
     created_at: datetime
     strategy: StrategyPublic | None = None
+    last_tick_at: datetime | None = None
+    last_signal: str | None = None
+    last_signal_symbol: str | None = None
+    last_error: str | None = None
+    tick_count: int = 0
 
 
 class AgentControlAction(BaseModel):

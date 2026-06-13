@@ -43,13 +43,49 @@ class TradingEngine:
             return {"skipped": True, "reason": "agent has no strategy"}
 
         strategy = get_strategy(strategy_type)
-        client = build_client(api_key)
+
+        # Record that a tick ran even if it errors out below.
+        agent.last_tick_at = datetime.now(timezone.utc)
+        agent.tick_count = (agent.tick_count or 0) + 1
+
+        try:
+            client = build_client(api_key)
+        except PermissionError as exc:
+            agent.last_error = str(exc)
+            await agent.save()
+            logger.warning("agent {}: cannot build client — {}", agent.id, exc)
+            return {"skipped": True, "reason": str(exc)}
+
         try:
             for symbol in (agent.trading_pairs or []):
-                await self._tick_symbol(agent, api_key, strategy, client, symbol)
+                try:
+                    await self._tick_symbol(agent, api_key, strategy, client, symbol)
+                except Exception as exc:  # noqa: BLE001
+                    agent.last_error = f"{symbol}: {exc}"
+                    logger.warning("agent {} {}: tick error — {}", agent.id, symbol, exc)
         finally:
             await client.close()
+
+        await agent.save()
         return {"ok": True}
+
+    # Rough minimum qty per symbol — Bybit rejects orders below these sizes.
+    # Keys are prefix-matched (e.g. "BTC" matches BTCUSDT).
+    _MIN_QTY: dict[str, float] = {
+        "BTC": 0.001,
+        "ETH": 0.01,
+        "SOL": 0.1,
+        "BNB": 0.01,
+        "XRP": 1.0,
+    }
+    _DEFAULT_MIN_QTY = 0.01
+
+    @classmethod
+    def _min_qty_for(cls, symbol: str) -> float:
+        for prefix, min_q in cls._MIN_QTY.items():
+            if symbol.upper().startswith(prefix):
+                return min_q
+        return cls._DEFAULT_MIN_QTY
 
     async def _tick_symbol(self, agent: Agent, api_key, strategy, client, symbol: str) -> None:
         try:
@@ -87,7 +123,16 @@ class TradingEngine:
             },
         )
 
+        # Track what this tick produced — caller will save the agent.
+        agent.last_signal = signal.action
+        agent.last_signal_symbol = symbol
+        agent.last_error = None
+
         last_price = float(df["close"].iloc[-1])
+        logger.debug(
+            "agent {} {} signal={} price={:.4f} confidence={:.2f}",
+            agent.id, symbol, signal.action, last_price, signal.confidence,
+        )
 
         if signal.action == "hold":
             return
@@ -108,6 +153,7 @@ class TradingEngine:
                 side=side,  # type: ignore[arg-type]
             )
             if not decision.approved:
+                agent.last_error = f"risk blocked: {decision.reason}"
                 await RiskEngine.log_risk_event(
                     user_id=agent.user_id,
                     agent_id=agent.id,
@@ -118,6 +164,26 @@ class TradingEngine:
                 )
                 return
 
+            # Enforce exchange minimum order size — prevent wasted API calls.
+            min_qty = self._min_qty_for(symbol)
+            qty = decision.sized_quantity
+            if qty < min_qty:
+                msg = (
+                    f"position size {qty:.6f} below exchange minimum {min_qty} for {symbol}. "
+                    f"Increase assigned capital (current: ${agent.assigned_capital:.0f})"
+                )
+                agent.last_error = msg
+                logger.warning("agent {} {}: {}", agent.id, symbol, msg)
+                await RiskEngine.log_risk_event(
+                    user_id=agent.user_id,
+                    agent_id=agent.id,
+                    event_type="min_qty",
+                    severity="warning",
+                    message=msg,
+                    details={"symbol": symbol, "qty": qty, "min_qty": min_qty},
+                )
+                return
+
             await self._open_trade(
                 agent=agent,
                 api_key=api_key,
@@ -125,7 +191,7 @@ class TradingEngine:
                 symbol=symbol,
                 side=side,  # type: ignore[arg-type]
                 entry_price=last_price,
-                quantity=decision.sized_quantity,
+                quantity=qty,
                 stop_loss_pct=sl_pct,
                 take_profit_pct=tp_pct,
                 signal=signal,

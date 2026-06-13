@@ -57,5 +57,12 @@ class Agent(Document):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    # Activity tracking — updated every scheduler tick so the UI can show live state
+    last_tick_at: Optional[datetime] = None
+    last_signal: Optional[str] = None          # "hold" | "enter_long" | "enter_short" | "exit"
+    last_signal_symbol: Optional[str] = None
+    last_error: Optional[str] = None
+    tick_count: int = 0
+
     class Settings:
         name = "agents"

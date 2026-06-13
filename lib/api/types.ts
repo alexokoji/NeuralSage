@@ -96,6 +96,11 @@ export interface Agent {
   started_at: string | null;
   created_at: string;
   strategy?: Strategy | null;
+  last_tick_at: string | null;
+  last_signal: string | null;
+  last_signal_symbol: string | null;
+  last_error: string | null;
+  tick_count: number;
 }
 
 export interface AgentCreate {

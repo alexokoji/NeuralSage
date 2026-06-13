@@ -32,7 +32,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
-import { useAgents, useApiKeys, useStrategies } from '@/lib/api/hooks';
+import { usePolling, useApiKeys, useStrategies } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
 import type { Agent, Timeframe } from '@/lib/api/types';
 
@@ -69,6 +69,21 @@ const statusConfig = {
   },
 } as const;
 
+function timeAgo(iso: string | null): string {
+  if (!iso) return 'never';
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
+const signalColors: Record<string, string> = {
+  enter_long: 'text-green-400',
+  enter_short: 'text-red-400',
+  exit: 'text-orange-400',
+  hold: 'text-muted-foreground',
+};
+
 function AgentCard({
   agent,
   onAction,
@@ -82,6 +97,10 @@ function AgentCard({
       ? ((agent.winning_trades / agent.total_trades) * 100).toFixed(0)
       : '0';
   const isProfitable = agent.total_pnl >= 0;
+  const isAnalysing =
+    agent.status === 'active' &&
+    agent.last_tick_at &&
+    Date.now() - new Date(agent.last_tick_at).getTime() < 60_000;
 
   return (
     <div className="bg-card border border-border rounded-xl p-5 space-y-4 hover:border-primary/20 transition-all">
@@ -196,6 +215,31 @@ function AgentCard({
         </span>
       </div>
 
+      {/* Live activity row */}
+      <div className="border-t border-border pt-3 space-y-1.5">
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-muted-foreground flex items-center gap-1">
+            <Activity className={cn('w-2.5 h-2.5', isAnalysing && 'animate-pulse text-green-400')} />
+            {isAnalysing ? 'Analysing' : 'Last scan'}
+          </span>
+          <span className="font-mono text-muted-foreground">{timeAgo(agent.last_tick_at)}</span>
+        </div>
+        {agent.last_signal && (
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-muted-foreground">Last signal</span>
+            <span className={cn('font-mono font-medium', signalColors[agent.last_signal] ?? 'text-foreground')}>
+              {agent.last_signal.replace('_', ' ').toUpperCase()}
+              {agent.last_signal_symbol ? ` · ${agent.last_signal_symbol}` : ''}
+            </span>
+          </div>
+        )}
+        {agent.last_error && (
+          <div className="flex items-start gap-1 bg-red-500/5 border border-red-500/20 rounded-md px-2 py-1.5">
+            <span className="text-[9px] text-red-400 leading-relaxed">{agent.last_error}</span>
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-2 pt-1">
         {agent.status === 'active' ? (
           <button
@@ -232,7 +276,10 @@ function AgentCard({
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
 export default function AgentsPage() {
-  const { data: agents, refetch: refetchAgents, error: agentsError } = useAgents();
+  const { data: agents, refetch: refetchAgents, error: agentsError } = usePolling(
+    () => api.listAgents(),
+    15_000,  // refresh every 15 s — matches the trading tick interval
+  );
   const { data: apiKeys } = useApiKeys();
   const { data: strategies } = useStrategies();
 
@@ -285,7 +332,7 @@ export default function AgentsPage() {
         description: '',
         api_key_id: '',
         strategy_id: '',
-        capital: 500,
+        capital: 100,
         riskPct: 2,
         pairs: 'BTCUSDT',
         timeframe: '15m',

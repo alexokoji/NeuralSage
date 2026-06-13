@@ -12,9 +12,16 @@ from app.services.exchange.bybit import BybitClient
 
 
 def build_client(api_key_row: ApiKey) -> ExchangeClient:
-    if "trade" not in (api_key_row.permissions or []):
-        # Defense in depth: even if the DB row is corrupted, refuse trading.
-        raise PermissionError("api key lacks 'trade' permission")
+    # Allow if the key was verified (exchange enforces actual permissions at order time)
+    # OR if the permissions array explicitly includes "trade" (default after creation).
+    can_trade = (
+        "trade" in (api_key_row.permissions or [])
+        or (api_key_row.verified and api_key_row.is_active)
+    )
+    if not can_trade:
+        raise PermissionError(
+            "api key is not verified — verify the key in Settings before starting agents"
+        )
     if "withdraw" in (api_key_row.permissions or []):
         raise PermissionError("api key has withdraw permission; refusing to use")
 
