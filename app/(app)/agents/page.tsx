@@ -245,7 +245,7 @@ export default function AgentsPage() {
     description: '',
     api_key_id: '',
     strategy_id: '',
-    capital: 500,
+    capital: 100,
     riskPct: 2,
     pairs: 'BTCUSDT',
     timeframe: '15m' as Timeframe,
@@ -466,7 +466,8 @@ export default function AgentsPage() {
                 <Label>Assigned Capital (USDT)</Label>
                 <Input
                   type="number"
-                  min={100}
+                  min={5}
+                  step={5}
                   value={form.capital}
                   onChange={e => setForm(p => ({ ...p, capital: Number(e.target.value) }))}
                   className="bg-background border-border"

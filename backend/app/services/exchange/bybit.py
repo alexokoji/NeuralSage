@@ -97,7 +97,7 @@ class BybitClient(ExchangeClient):
             raise ExchangeError(f"bybit: non-json response {resp.status_code}") from exc
         if data.get("retCode") not in (0, "0"):
             raise ExchangeError(f"bybit error {data.get('retCode')}: {data.get('retMsg')}")
-        return data.get("result", {})
+        return data.get("result") or {}
 
     async def _public(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         resp = await self._http.get(path, params=params)
@@ -128,16 +128,25 @@ class BybitClient(ExchangeClient):
         return sorted(set(flags))
 
     async def get_balances(self) -> list[Balance]:
-        result = await self._signed("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED"})
-        out: list[Balance] = []
-        for acct in result.get("list", []):
-            for coin in acct.get("coin", []):
-                free = float(coin.get("availableToWithdraw") or coin.get("walletBalance") or 0)
-                total = float(coin.get("walletBalance") or 0)
-                usd = float(coin.get("usdValue") or 0) or None
-                if total > 0:
-                    out.append(Balance(asset=coin["coin"], available=free, total=total, usd_value=usd))
-        return out
+        # Try account types in order: UNIFIED (new accounts) → CONTRACT (older/testnet) → SPOT
+        for acct_type in ("UNIFIED", "CONTRACT", "SPOT"):
+            try:
+                result = await self._signed(
+                    "GET", "/v5/account/wallet-balance", params={"accountType": acct_type}
+                )
+            except ExchangeError:
+                continue
+            out: list[Balance] = []
+            for acct in result.get("list", []):
+                for coin in acct.get("coin", []):
+                    free = float(coin.get("availableToWithdraw") or coin.get("walletBalance") or 0)
+                    total = float(coin.get("walletBalance") or 0)
+                    usd = float(coin.get("usdValue") or 0) or None
+                    if total > 0:
+                        out.append(Balance(asset=coin["coin"], available=free, total=total, usd_value=usd))
+            if out:
+                return out
+        return []
 
     async def get_ticker(self, symbol: str) -> Ticker:
         result = await self._public("/v5/market/tickers", {"category": "linear", "symbol": symbol})
