@@ -47,8 +47,27 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "api key not found")
 
+    # Build the client directly, bypassing the "trade permission required" guard
+    # that build_client enforces — this endpoint exists specifically to check perms.
+    from app.core.encryption import decrypt_packed
+    from app.services.exchange.bybit import BybitClient
+    from app.services.exchange.bitget import BitgetClient
+
     try:
-        client = build_client(row)
+        aad = str(row.user_id).encode()
+        plaintext_key = decrypt_packed(row.encrypted_api_key, associated_data=aad)
+        plaintext_secret = decrypt_packed(row.encrypted_api_secret, associated_data=aad)
+        is_testnet = row.is_testnet or row.exchange == "bybit_testnet"
+        if row.exchange in ("bybit", "bybit_testnet"):
+            client = BybitClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
+        elif row.exchange == "bitget":
+            client = BitgetClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
+        else:
+            return ApiKeyVerifyResult(verified=False, permissions=[], error=f"unsupported exchange: {row.exchange}")
+    except Exception as exc:
+        return ApiKeyVerifyResult(verified=False, permissions=[], error=f"key decryption failed: {exc}")
+
+    try:
         try:
             perms = await client.verify_permissions()
         finally:
@@ -58,10 +77,11 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
         row.is_active = False
         await row.save()
         return ApiKeyVerifyResult(verified=False, permissions=list(row.permissions), error=str(exc))
-    except (ExchangeError, PermissionError) as exc:
+    except (ExchangeError, Exception) as exc:
         return ApiKeyVerifyResult(verified=False, permissions=list(row.permissions), error=str(exc))
 
     row.verified = True
+    row.is_active = True
     row.permissions = perms
     row.last_verified_at = datetime.now(timezone.utc)
     await row.save()

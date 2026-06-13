@@ -73,8 +73,12 @@ def _indicator_summary(df: pd.DataFrame) -> str:
 # System prompts
 # ------------------------------------------------------------------ #
 
-_TRADING_SYSTEM = """You are NeuralSage's AI trading analyst powered by Grok.
+_TRADING_SYSTEM = """You are NeuralSage's AI trading analyst powered by Groq/Llama.
 You assist a crypto-trading platform by analysing market data and agent performance.
+
+You DO have access to live market data — it is provided in the "Live platform data" section
+of each request under the key "live_market_prices". Use it to answer questions about current prices.
+Never say you lack access to market data; always check the provided data first.
 
 Rules you must follow:
 - Be concise and precise. No waffle.
@@ -82,6 +86,7 @@ Rules you must follow:
 - Never invent price levels or statistics not present in the supplied data.
 - Risk management is paramount: when uncertain, prefer caution (hold / reduce confidence).
 - Monetary values are in USDT unless stated otherwise.
+- When the user asks about a coin price, look it up in live_market_prices before responding.
 """
 
 _PARAM_SYSTEM = """You are NeuralSage's strategy parameter advisor powered by Grok.
@@ -284,8 +289,8 @@ async def chat(
         client = GrokClient()
     except GrokUnavailableError:
         return (
-            "Grok AI is not available. Please add your XAI_API_KEY to the "
-            "environment to enable the AI assistant."
+            "The AI assistant is not configured. Please add your GROQ_API_KEY "
+            "(free at console.groq.com) to the environment to enable it."
         )
 
     context_lines: list[str] = []

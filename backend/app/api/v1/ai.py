@@ -60,15 +60,37 @@ async def ai_status(_: User = Depends(get_current_user)) -> StatusResponse:
     )
 
 
+_MARKET_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+
+
+async def _live_prices() -> dict[str, Any]:
+    """Fetch current prices for top coins. Fails silently."""
+    from app.services.market_data import get_public_ticker
+    prices: dict[str, Any] = {}
+    for sym in _MARKET_SYMBOLS:
+        try:
+            t = await get_public_ticker(sym)
+            prices[sym] = {"price": t["price"], "change_24h_pct": t["change_24h_pct"]}
+        except Exception:
+            pass
+    return prices
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(
     body: ChatRequest,
     _: User = Depends(get_current_user),
 ) -> ChatResponse:
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
+
+    # Merge live market prices into the portfolio context so Groq can answer
+    # questions about current prices without claiming it has no data.
+    portfolio_ctx = dict(body.portfolio_context or {})
+    portfolio_ctx["live_market_prices"] = await _live_prices()
+
     reply = await grok_analyst.chat(
         messages,
-        portfolio_context=body.portfolio_context,
+        portfolio_context=portfolio_ctx,
         active_agents=body.active_agents,
     )
     return ChatResponse(reply=reply)

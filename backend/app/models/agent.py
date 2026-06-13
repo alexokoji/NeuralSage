@@ -15,6 +15,7 @@ class StrategyEmbed(BaseModel):
     type: str
     description: str = ""
     default_params: dict[str, Any] = Field(default_factory=dict)
+    is_system: bool = True
 
 
 class Agent(Document):
