@@ -126,10 +126,16 @@ class BybitClient(ExchangeClient):
             data = resp.json()
         except Exception as exc:
             if resp.status_code == 403:
+                if self.is_testnet:
+                    raise ExchangeError(
+                        "bybit testnet blocks all requests from cloud hosting providers "
+                        "(Render, AWS, GCP) at the CDN level — this is not an API key "
+                        "setting. You must use a funded Bybit mainnet key for real trading."
+                    ) from exc
                 raise ExchangeError(
-                    "bybit: 403 Forbidden — your API key may have IP restrictions. "
-                    "Go to Bybit testnet → API Management → edit key → remove IP restriction "
-                    "or add this server's IP to the whitelist."
+                    "bybit mainnet 403 — open Bybit → API Management → edit this key → "
+                    "make sure 'IP restriction' is set to 'No restriction' (or add this "
+                    "server's outbound IP to the whitelist)."
                 ) from exc
             raise ExchangeError(f"bybit: non-json response {resp.status_code}") from exc
         if data.get("retCode") not in (0, "0"):
