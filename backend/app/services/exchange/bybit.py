@@ -2,6 +2,11 @@
 
 Signing:
   HMAC-SHA256( timestamp + api_key + recv_window + queryString_or_body )
+
+Public market data (candles, tickers) cascades through three providers:
+  1. Bybit mainnet — may be blocked by Cloudflare on cloud-hosted servers.
+  2. OKX public spot — generally unrestricted from any IP.
+  3. (error) — surface the last failure to the caller.
 """
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ from app.services.exchange.base import (
 )
 
 _RECV_WINDOW = "5000"
-_BINANCE_SPOT_URL = "https://api.binance.com"
+_OKX_URL = "https://www.okx.com"
 
 _TIMEFRAME_MAP = {
     "1m": "1",
@@ -40,6 +45,20 @@ _TIMEFRAME_MAP = {
     "4h": "240",
     "1d": "D",
 }
+
+# OKX uses uppercase for hours/days
+_OKX_INTERVAL_MAP = {
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m",
+    "30m": "30m", "1h": "1H", "4h": "4H", "1d": "1D",
+}
+
+
+def _to_okx_symbol(symbol: str) -> str:
+    """BTCUSDT → BTC-USDT"""
+    s = symbol.upper()
+    if s.endswith("USDT"):
+        return s[:-4] + "-USDT"
+    return s
 
 
 class BybitClient(ExchangeClient):
@@ -53,14 +72,13 @@ class BybitClient(ExchangeClient):
         _headers = {"User-Agent": "NeuralSage/1.0"}
         # Signed requests (orders, balance, verify) go to testnet when is_testnet.
         self._http = httpx.AsyncClient(base_url=signed_base, timeout=httpx.Timeout(15.0), headers=_headers)
-        # Public market data always uses mainnet — testnet Cloudflare blocks cloud-provider
-        # IPs for unauthenticated requests, causing 403 non-JSON responses.
+        # Public market data always tries mainnet first.
         self._pub_http = httpx.AsyncClient(
             base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_headers
         )
-        # Binance spot — unrestricted fallback for public candle/ticker data when Bybit is blocked.
-        self._bin_http = httpx.AsyncClient(
-            base_url=_BINANCE_SPOT_URL, timeout=httpx.Timeout(15.0), headers=_headers
+        # OKX public spot — fallback when Bybit is blocked by Cloudflare on cloud IPs.
+        self._okx_http = httpx.AsyncClient(
+            base_url=_OKX_URL, timeout=httpx.Timeout(15.0), headers=_headers
         )
 
     # -------- signing --------
@@ -128,6 +146,63 @@ class BybitClient(ExchangeClient):
             raise ExchangeError(f"bybit public error {data.get('retCode')}: {data.get('retMsg')}")
         return data.get("result") or {}
 
+    # -------- OKX fallback (public, no IP restrictions) --------
+
+    async def _okx_candles(self, symbol: str, interval: str, limit: int) -> list[Candle]:
+        inst_id = _to_okx_symbol(symbol)
+        bar = _OKX_INTERVAL_MAP.get(interval, "15m")
+        resp = await self._okx_http.get(
+            "/api/v5/market/candles",
+            params={"instId": inst_id, "bar": bar, "limit": min(limit, 300)},
+        )
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise ExchangeError(f"okx: non-json candles response {resp.status_code}") from exc
+        if data.get("code") != "0":
+            raise ExchangeError(f"okx candles error {data.get('code')}: {data.get('msg', data)}")
+        rows = data.get("data") or []
+        # OKX returns newest-first; each row: [ts, open, high, low, close, vol, ...]
+        rows = list(reversed(rows))
+        return [
+            Candle(
+                open_time=int(r[0]),
+                open=float(r[1]),
+                high=float(r[2]),
+                low=float(r[3]),
+                close=float(r[4]),
+                volume=float(r[5]),
+            )
+            for r in rows
+        ]
+
+    async def _okx_ticker(self, symbol: str) -> Ticker:
+        inst_id = _to_okx_symbol(symbol)
+        resp = await self._okx_http.get("/api/v5/market/ticker", params={"instId": inst_id})
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise ExchangeError(f"okx: non-json ticker response {resp.status_code}") from exc
+        if data.get("code") != "0":
+            raise ExchangeError(f"okx ticker error {data.get('code')}: {data.get('msg', data)}")
+        items = data.get("data") or []
+        if not items:
+            raise ExchangeError(f"okx: no ticker for {symbol}")
+        t = items[0]
+        last = float(t["last"])
+        open24 = float(t.get("open24h") or last)
+        change_pct = ((last - open24) / open24 * 100) if open24 else 0.0
+        return Ticker(
+            symbol=symbol,
+            last=last,
+            bid=float(t.get("bidPx") or last),
+            ask=float(t.get("askPx") or last),
+            high_24h=float(t.get("high24h") or last),
+            low_24h=float(t.get("low24h") or last),
+            volume_24h=float(t.get("volCcy24h") or 0),
+            change_24h_pct=change_pct,
+        )
+
     # -------- interface --------
 
     async def verify_permissions(self) -> list[str]:
@@ -170,53 +245,6 @@ class BybitClient(ExchangeClient):
                 return out
         return []
 
-    async def _binance_candles(self, symbol: str, interval: str, limit: int) -> list[Candle]:
-        resp = await self._bin_http.get(
-            "/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-        )
-        try:
-            rows = resp.json()
-        except Exception as exc:
-            raise ExchangeError(f"binance: non-json klines response {resp.status_code}") from exc
-        if isinstance(rows, dict):
-            raise ExchangeError(f"binance klines error {rows.get('code', '?')}: {rows.get('msg', rows)}")
-        if not isinstance(rows, list):
-            raise ExchangeError(f"binance: unexpected klines format ({type(rows).__name__})")
-        # Binance returns oldest-first, each row: [open_time, open, high, low, close, volume, ...]
-        return [
-            Candle(
-                open_time=int(r[0]),
-                open=float(r[1]),
-                high=float(r[2]),
-                low=float(r[3]),
-                close=float(r[4]),
-                volume=float(r[5]),
-            )
-            for r in rows
-        ]
-
-    async def _binance_ticker(self, symbol: str) -> Ticker:
-        resp = await self._bin_http.get("/api/v3/ticker/24hr", params={"symbol": symbol})
-        try:
-            t = resp.json()
-        except Exception as exc:
-            raise ExchangeError(f"binance: non-json ticker response {resp.status_code}") from exc
-        if isinstance(t, dict) and "code" in t:
-            raise ExchangeError(f"binance ticker error {t.get('code', '?')}: {t.get('msg', t)}")
-        if "lastPrice" not in t:
-            raise ExchangeError(f"binance: no ticker data for {symbol}")
-        return Ticker(
-            symbol=t["symbol"],
-            last=float(t["lastPrice"]),
-            bid=float(t.get("bidPrice") or t["lastPrice"]),
-            ask=float(t.get("askPrice") or t["lastPrice"]),
-            high_24h=float(t["highPrice"]),
-            low_24h=float(t["lowPrice"]),
-            volume_24h=float(t["quoteVolume"]),
-            change_24h_pct=float(t["priceChangePercent"]),
-        )
-
     async def get_ticker(self, symbol: str) -> Ticker:
         try:
             result = await self._public("/v5/market/tickers", {"category": "linear", "symbol": symbol})
@@ -235,8 +263,8 @@ class BybitClient(ExchangeClient):
                 change_24h_pct=float(t["price24hPcnt"]) * 100,
             )
         except ExchangeError:
-            logger.debug("bybit public ticker blocked — falling back to binance for {}", symbol)
-            return await self._binance_ticker(symbol)
+            logger.debug("bybit public ticker blocked — falling back to okx for {}", symbol)
+            return await self._okx_ticker(symbol)
 
     async def get_candles(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
         bybit_interval = _TIMEFRAME_MAP.get(interval, interval)
@@ -260,8 +288,8 @@ class BybitClient(ExchangeClient):
                 for r in rows
             ]
         except ExchangeError:
-            logger.debug("bybit public candles blocked — falling back to binance for {}", symbol)
-            return await self._binance_candles(symbol, interval, limit)
+            logger.debug("bybit public candles blocked — falling back to okx for {}", symbol)
+            return await self._okx_candles(symbol, interval, limit)
 
     async def place_order(self, order: OrderRequest) -> OrderResult:
         body: dict[str, Any] = {
@@ -327,4 +355,4 @@ class BybitClient(ExchangeClient):
     async def close(self) -> None:
         await self._http.aclose()
         await self._pub_http.aclose()
-        await self._bin_http.aclose()
+        await self._okx_http.aclose()
