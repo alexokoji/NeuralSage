@@ -91,6 +91,7 @@ class TradingEngine:
         try:
             raw = await client.get_candles(symbol, agent.timeframe, limit=200)
         except ExchangeError as exc:
+            agent.last_error = f"{symbol}: market data unavailable — {exc}"
             logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
             return
         if len(raw) < 50:
