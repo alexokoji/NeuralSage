@@ -120,6 +120,7 @@ export default function DashboardPage() {
   const dailyPnlPct = portfolio?.daily_pnl_pct ?? 0;
   const activeAgents = portfolio?.active_agents_count ?? 0;
   const openPositions = portfolio?.open_positions_count ?? 0;
+  const exchangeErrors = (portfolio?.exchanges ?? []).filter(e => e.error);
 
   const portfolioSeries = useMemo(
     () => buildPortfolioSeries(trades ?? [], totalBalance || 10000),
@@ -443,6 +444,27 @@ export default function DashboardPage() {
           </table>
         </div>
       </div>
+
+      {exchangeErrors.length > 0 && (
+        <div className="space-y-2">
+          {exchangeErrors.map(e => (
+            <div key={e.api_key_id} className="flex items-start gap-3 px-4 py-3 bg-red-500/5 border border-red-500/15 rounded-xl">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-red-400">
+                  {e.exchange}{e.is_testnet ? ' testnet' : ''} — balance unavailable
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5 break-words">{e.error}</p>
+                {e.is_testnet && (
+                  <p className="text-[11px] text-orange-400 mt-1">
+                    Bybit testnet signed requests are blocked from cloud hosting. Add a funded mainnet API key to enable real trading and balance display.
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex items-center gap-3 px-4 py-3 bg-orange-500/5 border border-orange-500/15 rounded-xl">
         <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0" />

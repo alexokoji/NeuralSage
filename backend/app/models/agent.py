@@ -58,7 +58,6 @@ class Agent(Document):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # When True, orders are simulated locally — no exchange API calls for entry/exit.
-    # Use this to test strategy logic when the exchange is unreachable from the host.
     is_paper_trade: bool = False
 
     # Activity tracking — updated every scheduler tick so the UI can show live state

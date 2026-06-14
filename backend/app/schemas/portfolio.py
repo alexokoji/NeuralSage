@@ -18,6 +18,7 @@ class ExchangeBalance(BaseModel):
     is_testnet: bool
     balances: list[BalanceEntry]
     updated_at: str
+    error: str | None = None  # set when balance fetch fails
 
 
 class PortfolioOverview(BaseModel):

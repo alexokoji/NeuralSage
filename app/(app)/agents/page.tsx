@@ -321,7 +321,7 @@ export default function AgentsPage() {
     riskPct: 2,
     pairs: ['BTCUSDT'] as string[],
     timeframe: '15m' as Timeframe,
-    isPaperTrade: true,
+    isPaperTrade: false,
   });
 
   async function handleAction(id: string, action: 'start' | 'pause' | 'stop') {
@@ -363,7 +363,7 @@ export default function AgentsPage() {
         riskPct: 2,
         pairs: ['BTCUSDT'],
         timeframe: '15m',
-        isPaperTrade: true,
+        isPaperTrade: false,
       });
     } catch (exc) {
       setFormError((exc as Error).message);

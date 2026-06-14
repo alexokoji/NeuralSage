@@ -29,6 +29,8 @@ async def overview(user: User = Depends(get_current_user)) -> PortfolioOverview:
     for k in keys:
         if not k.is_active:
             continue
+        fetch_error: str | None = None
+        balances = []
         try:
             client = build_client(k)
             try:
@@ -36,9 +38,21 @@ async def overview(user: User = Depends(get_current_user)) -> PortfolioOverview:
             finally:
                 await client.close()
         except (ExchangeError, PermissionError) as exc:
-            balances = []
-            k.balance_cache = {"error": str(exc)}
+            fetch_error = str(exc)
+            k.balance_cache = {"error": fetch_error}
             await k.save()
+
+        if fetch_error:
+            exchanges.append(
+                ExchangeBalance(
+                    api_key_id=str(k.id),
+                    exchange=k.exchange,
+                    is_testnet=k.is_testnet,
+                    balances=[],
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                    error=fetch_error,
+                )
+            )
             continue
 
         entries = [

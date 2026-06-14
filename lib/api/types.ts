@@ -194,6 +194,7 @@ export interface ExchangeBalance {
   is_testnet: boolean;
   balances: BalanceEntry[];
   updated_at: string;
+  error: string | null;
 }
 
 export interface PortfolioOverview {
