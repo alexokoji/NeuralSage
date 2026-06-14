@@ -275,6 +275,25 @@ function AgentCard({
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
+const MARKETS = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'BNBUSDT',
+  'XRPUSDT',
+  'ADAUSDT',
+  'DOGEUSDT',
+  'AVAXUSDT',
+  'DOTUSDT',
+  'LINKUSDT',
+  'LTCUSDT',
+  'MATICUSDT',
+  'TONUSDT',
+  'SUIUSDT',
+  'APTUSDT',
+  'ARBUSDT',
+];
+
 export default function AgentsPage() {
   const { data: agents, refetch: refetchAgents, error: agentsError } = usePolling(
     () => api.listAgents(),
@@ -294,7 +313,7 @@ export default function AgentsPage() {
     strategy_id: '',
     capital: 100,
     riskPct: 2,
-    pairs: 'BTCUSDT',
+    pairs: ['BTCUSDT'] as string[],
     timeframe: '15m' as Timeframe,
   });
 
@@ -321,7 +340,7 @@ export default function AgentsPage() {
         strategy_id: form.strategy_id,
         assigned_capital: form.capital,
         currency: 'USDT',
-        trading_pairs: form.pairs.split(',').map(p => p.trim()).filter(Boolean),
+        trading_pairs: form.pairs,
         timeframe: form.timeframe,
         max_risk_per_trade: form.riskPct,
       });
@@ -334,7 +353,7 @@ export default function AgentsPage() {
         strategy_id: '',
         capital: 100,
         riskPct: 2,
-        pairs: 'BTCUSDT',
+        pairs: ['BTCUSDT'],
         timeframe: '15m',
       });
     } catch (exc) {
@@ -559,13 +578,42 @@ export default function AgentsPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>Trading Pairs (comma separated)</Label>
-              <Input
-                value={form.pairs}
-                onChange={e => setForm(p => ({ ...p, pairs: e.target.value }))}
-                placeholder="BTCUSDT, ETHUSDT"
-                className="bg-background border-border"
-              />
+              <Label>
+                Markets{' '}
+                <span className="text-muted-foreground font-normal">
+                  ({form.pairs.length} selected)
+                </span>
+              </Label>
+              <div className="flex flex-wrap gap-1.5 p-3 bg-background border border-border rounded-lg max-h-36 overflow-y-auto">
+                {MARKETS.map(m => {
+                  const selected = form.pairs.includes(m);
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() =>
+                        setForm(p => ({
+                          ...p,
+                          pairs: selected
+                            ? p.pairs.filter(x => x !== m)
+                            : [...p.pairs, m],
+                        }))
+                      }
+                      className={cn(
+                        'px-2 py-1 rounded-md text-[11px] font-mono font-medium border transition-all',
+                        selected
+                          ? 'bg-primary/15 border-primary/40 text-primary'
+                          : 'bg-accent/50 border-border text-muted-foreground hover:border-primary/20 hover:text-foreground',
+                      )}
+                    >
+                      {m.replace('USDT', '/USDT')}
+                    </button>
+                  );
+                })}
+              </div>
+              {form.pairs.length === 0 && (
+                <p className="text-[10px] text-red-400">Select at least one market.</p>
+              )}
             </div>
 
             {formError && (
@@ -590,7 +638,8 @@ export default function AgentsPage() {
                   submitting ||
                   !form.name ||
                   !form.strategy_id ||
-                  !form.api_key_id
+                  !form.api_key_id ||
+                  form.pairs.length === 0
                 }
               >
                 {submitting ? 'Creating…' : 'Create Agent'}
