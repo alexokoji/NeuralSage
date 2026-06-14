@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 import httpx
+from loguru import logger
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import settings
@@ -27,6 +28,7 @@ from app.services.exchange.base import (
 )
 
 _RECV_WINDOW = "5000"
+_BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
 _TIMEFRAME_MAP = {
     "1m": "1",
@@ -55,6 +57,10 @@ class BybitClient(ExchangeClient):
         # IPs for unauthenticated requests, causing 403 non-JSON responses.
         self._pub_http = httpx.AsyncClient(
             base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_headers
+        )
+        # Binance USDT-M futures — unrestricted fallback for public candle/ticker data.
+        self._bin_http = httpx.AsyncClient(
+            base_url=_BINANCE_FUTURES_URL, timeout=httpx.Timeout(15.0), headers=_headers
         )
 
     # -------- signing --------
@@ -164,32 +170,18 @@ class BybitClient(ExchangeClient):
                 return out
         return []
 
-    async def get_ticker(self, symbol: str) -> Ticker:
-        result = await self._public("/v5/market/tickers", {"category": "linear", "symbol": symbol})
-        items = result.get("list") or []
-        if not items:
-            raise ExchangeError(f"bybit: no ticker for {symbol}")
-        t = items[0]
-        return Ticker(
-            symbol=t["symbol"],
-            last=float(t["lastPrice"]),
-            bid=float(t.get("bid1Price") or t["lastPrice"]),
-            ask=float(t.get("ask1Price") or t["lastPrice"]),
-            high_24h=float(t["highPrice24h"]),
-            low_24h=float(t["lowPrice24h"]),
-            volume_24h=float(t["turnover24h"]),
-            change_24h_pct=float(t["price24hPcnt"]) * 100,
+    async def _binance_candles(self, symbol: str, interval: str, limit: int) -> list[Candle]:
+        resp = await self._bin_http.get(
+            "/fapi/v1/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
         )
-
-    async def get_candles(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
-        bybit_interval = _TIMEFRAME_MAP.get(interval, interval)
-        result = await self._public(
-            "/v5/market/kline",
-            {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit},
-        )
-        rows = result.get("list") or []
-        # Bybit returns newest-first.
-        rows = list(reversed(rows))
+        try:
+            rows = resp.json()
+        except Exception as exc:
+            raise ExchangeError(f"binance: non-json klines response {resp.status_code}") from exc
+        if not isinstance(rows, list):
+            raise ExchangeError("binance: unexpected klines format")
+        # Binance returns oldest-first, each row: [open_time, open, high, low, close, volume, ...]
         return [
             Candle(
                 open_time=int(r[0]),
@@ -201,6 +193,71 @@ class BybitClient(ExchangeClient):
             )
             for r in rows
         ]
+
+    async def _binance_ticker(self, symbol: str) -> Ticker:
+        resp = await self._bin_http.get("/fapi/v1/ticker/24hr", params={"symbol": symbol})
+        try:
+            t = resp.json()
+        except Exception as exc:
+            raise ExchangeError(f"binance: non-json ticker response {resp.status_code}") from exc
+        if "lastPrice" not in t:
+            raise ExchangeError(f"binance: no ticker data for {symbol}")
+        return Ticker(
+            symbol=t["symbol"],
+            last=float(t["lastPrice"]),
+            bid=float(t.get("bidPrice") or t["lastPrice"]),
+            ask=float(t.get("askPrice") or t["lastPrice"]),
+            high_24h=float(t["highPrice"]),
+            low_24h=float(t["lowPrice"]),
+            volume_24h=float(t["quoteVolume"]),
+            change_24h_pct=float(t["priceChangePercent"]),
+        )
+
+    async def get_ticker(self, symbol: str) -> Ticker:
+        try:
+            result = await self._public("/v5/market/tickers", {"category": "linear", "symbol": symbol})
+            items = result.get("list") or []
+            if not items:
+                raise ExchangeError(f"bybit: no ticker for {symbol}")
+            t = items[0]
+            return Ticker(
+                symbol=t["symbol"],
+                last=float(t["lastPrice"]),
+                bid=float(t.get("bid1Price") or t["lastPrice"]),
+                ask=float(t.get("ask1Price") or t["lastPrice"]),
+                high_24h=float(t["highPrice24h"]),
+                low_24h=float(t["lowPrice24h"]),
+                volume_24h=float(t["turnover24h"]),
+                change_24h_pct=float(t["price24hPcnt"]) * 100,
+            )
+        except ExchangeError:
+            logger.debug("bybit public ticker blocked — falling back to binance for {}", symbol)
+            return await self._binance_ticker(symbol)
+
+    async def get_candles(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
+        bybit_interval = _TIMEFRAME_MAP.get(interval, interval)
+        try:
+            result = await self._public(
+                "/v5/market/kline",
+                {"category": "linear", "symbol": symbol, "interval": bybit_interval, "limit": limit},
+            )
+            rows = result.get("list") or []
+            # Bybit returns newest-first.
+            rows = list(reversed(rows))
+            return [
+                Candle(
+                    open_time=int(r[0]),
+                    open=float(r[1]),
+                    high=float(r[2]),
+                    low=float(r[3]),
+                    close=float(r[4]),
+                    volume=float(r[5]),
+                )
+                for r in rows
+            ]
+        except ExchangeError:
+            logger.debug("bybit public candles blocked — falling back to binance for {}", symbol)
+            return await self._binance_candles(symbol, interval, limit)
 
     async def place_order(self, order: OrderRequest) -> OrderResult:
         body: dict[str, Any] = {
@@ -266,3 +323,4 @@ class BybitClient(ExchangeClient):
     async def close(self) -> None:
         await self._http.aclose()
         await self._pub_http.aclose()
+        await self._bin_http.aclose()
