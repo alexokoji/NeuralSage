@@ -54,6 +54,8 @@ export default function SettingsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [blockedKeyId, setBlockedKeyId] = useState<string | null>(null);
+  const [trustingId, setTrustingId] = useState<string | null>(null);
   const [newKey, setNewKey] = useState({
     exchange: 'bybit' as Exchange,
     label: '',
@@ -123,14 +125,31 @@ export default function SettingsPage() {
 
   async function handleVerify(id: string) {
     setVerifyingId(id);
+    setBlockedKeyId(null);
     try {
       const result = await api.verifyApiKey(id);
-      if (!result.verified && result.error) {
+      if (result.verified) {
+        setBlockedKeyId(null);
+      } else if (result.server_blocked) {
+        // 403 from the exchange CDN — key may still be valid, let user force-activate
+        setBlockedKeyId(id);
+      } else if (result.error) {
         window.alert(`Verification failed: ${result.error}`);
       }
       await refetch();
     } finally {
       setVerifyingId(null);
+    }
+  }
+
+  async function handleTrust(id: string) {
+    setTrustingId(id);
+    try {
+      await api.trustApiKey(id);
+      setBlockedKeyId(null);
+      await refetch();
+    } finally {
+      setTrustingId(null);
     }
   }
 
@@ -255,6 +274,27 @@ export default function SettingsPage() {
                     </button>
                   </div>
                 </div>
+
+                {blockedKeyId === key.id && (
+                  <div className="mt-3 p-3 bg-orange-500/5 border border-orange-500/20 rounded-lg space-y-2">
+                    <p className="text-[11px] text-orange-400 font-medium">
+                      Exchange CDN blocked verification
+                    </p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Bybit testnet&apos;s Cloudflare WAF is blocking this server&apos;s IP for signed
+                      requests — this is common with cloud hosting. Your key is saved and encrypted.
+                      Click <strong>Activate Anyway</strong> to trust it; any invalid credentials
+                      will appear as errors in the agent activity log.
+                    </p>
+                    <button
+                      onClick={() => handleTrust(key.id)}
+                      disabled={trustingId === key.id}
+                      className="w-full py-1.5 text-[11px] font-medium bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 rounded-md transition-colors"
+                    >
+                      {trustingId === key.id ? 'Activating…' : 'Activate Anyway'}
+                    </button>
+                  </div>
+                )}
 
                 <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
                   <div>
@@ -394,6 +434,18 @@ export default function SettingsPage() {
                     enable Withdraw permissions — verification will reject the key.
                   </p>
                 </div>
+                {newKey.exchange === 'bybit_testnet' && (
+                  <div className="p-3 bg-blue-500/5 border border-blue-500/15 rounded-lg">
+                    <p className="text-[10px] text-blue-400 font-medium mb-1">
+                      Bybit Testnet Note
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Testnet verification may fail with a 403 from Bybit&apos;s CDN when running
+                      on cloud servers. If that happens, use <strong>Activate Anyway</strong> —
+                      your key is saved encrypted and agents will attempt trading normally.
+                    </p>
+                  </div>
+                )}
                 {formError && (
                   <div className="text-xs text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
                     {formError}

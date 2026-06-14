@@ -78,7 +78,16 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
         await row.save()
         return ApiKeyVerifyResult(verified=False, permissions=list(row.permissions), error=str(exc))
     except (ExchangeError, Exception) as exc:
-        return ApiKeyVerifyResult(verified=False, permissions=list(row.permissions), error=str(exc))
+        err = str(exc)
+        # 403 means the server IP was blocked at WAF/CDN level before reaching
+        # Bybit's auth layer. Common with cloud hosting + testnet.
+        server_blocked = "403" in err
+        return ApiKeyVerifyResult(
+            verified=False,
+            permissions=list(row.permissions),
+            error=err,
+            server_blocked=server_blocked,
+        )
 
     row.verified = True
     row.is_active = True
@@ -86,6 +95,24 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
     row.last_verified_at = datetime.now(timezone.utc)
     await row.save()
     return ApiKeyVerifyResult(verified=True, permissions=perms)
+
+
+@router.post("/{key_id}/trust", response_model=ApiKeyPublic)
+async def trust_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
+    """Activate a key without exchange verification.
+
+    Use when the exchange CDN blocks the server IP (common with Bybit testnet
+    and cloud hosting). Invalid credentials will surface as errors in the agent
+    activity log when the first order is attempted.
+    """
+    row = await ApiKey.find_one(ApiKey.id == key_id, ApiKey.user_id == user.id)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "api key not found")
+    row.verified = True
+    row.is_active = True
+    row.last_verified_at = datetime.now(timezone.utc)
+    await row.save()
+    return row
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

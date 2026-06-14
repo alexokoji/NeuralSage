@@ -130,10 +130,11 @@ export const api = {
   listApiKeys: () => request<ApiKey[]>('GET', '/api/v1/api-keys'),
   createApiKey: (body: ApiKeyCreate) => request<ApiKey>('POST', '/api/v1/api-keys', body),
   verifyApiKey: (id: string) =>
-    request<{ verified: boolean; permissions: string[]; error: string | null }>(
+    request<{ verified: boolean; permissions: string[]; error: string | null; server_blocked: boolean }>(
       'POST',
       `/api/v1/api-keys/${id}/verify`,
     ),
+  trustApiKey: (id: string) => request<ApiKey>('POST', `/api/v1/api-keys/${id}/trust`),
   deleteApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
 
   // ----- agents -----

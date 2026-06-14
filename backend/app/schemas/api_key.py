@@ -39,3 +39,4 @@ class ApiKeyVerifyResult(BaseModel):
     verified: bool
     permissions: list[str]
     error: str | None = None
+    server_blocked: bool = False  # True when exchange returns 403 (cloud IP blocked by WAF)
