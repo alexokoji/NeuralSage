@@ -47,8 +47,15 @@ class BybitClient(ExchangeClient):
         self._key = api_key
         self._secret = api_secret.encode()
         self.is_testnet = is_testnet
-        base = settings.BYBIT_TESTNET_REST_URL if is_testnet else settings.BYBIT_REST_URL
-        self._http = httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(15.0))
+        signed_base = settings.BYBIT_TESTNET_REST_URL if is_testnet else settings.BYBIT_REST_URL
+        _headers = {"User-Agent": "NeuralSage/1.0"}
+        # Signed requests (orders, balance, verify) go to testnet when is_testnet.
+        self._http = httpx.AsyncClient(base_url=signed_base, timeout=httpx.Timeout(15.0), headers=_headers)
+        # Public market data always uses mainnet — testnet Cloudflare blocks cloud-provider
+        # IPs for unauthenticated requests, causing 403 non-JSON responses.
+        self._pub_http = httpx.AsyncClient(
+            base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_headers
+        )
 
     # -------- signing --------
 
@@ -94,17 +101,26 @@ class BybitClient(ExchangeClient):
         try:
             data = resp.json()
         except Exception as exc:
+            if resp.status_code == 403:
+                raise ExchangeError(
+                    "bybit: 403 Forbidden — your API key may have IP restrictions. "
+                    "Go to Bybit testnet → API Management → edit key → remove IP restriction "
+                    "or add this server's IP to the whitelist."
+                ) from exc
             raise ExchangeError(f"bybit: non-json response {resp.status_code}") from exc
         if data.get("retCode") not in (0, "0"):
             raise ExchangeError(f"bybit error {data.get('retCode')}: {data.get('retMsg')}")
         return data.get("result") or {}
 
     async def _public(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        resp = await self._http.get(path, params=params)
-        data = resp.json()
+        resp = await self._pub_http.get(path, params=params)
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise ExchangeError(f"bybit: non-json public response {resp.status_code}") from exc
         if data.get("retCode") not in (0, "0"):
             raise ExchangeError(f"bybit public error {data.get('retCode')}: {data.get('retMsg')}")
-        return data.get("result", {})
+        return data.get("result") or {}
 
     # -------- interface --------
 
@@ -249,3 +265,4 @@ class BybitClient(ExchangeClient):
 
     async def close(self) -> None:
         await self._http.aclose()
+        await self._pub_http.aclose()
