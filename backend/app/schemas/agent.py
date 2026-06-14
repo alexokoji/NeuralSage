@@ -45,6 +45,7 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     description: str | None = Field(default=None, max_length=500)
+    api_key_id: uuid.UUID | None = None
     assigned_capital: float | None = Field(default=None, ge=0)
     trading_pairs: list[str] | None = None
     timeframe: Timeframe | None = None

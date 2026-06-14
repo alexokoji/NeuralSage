@@ -142,7 +142,7 @@ export const api = {
   listAgents: () => request<Agent[]>('GET', '/api/v1/agents'),
   createAgent: (body: AgentCreate) => request<Agent>('POST', '/api/v1/agents', body),
   getAgent: (id: string) => request<Agent>('GET', `/api/v1/agents/${id}`),
-  updateAgent: (id: string, patch: Partial<AgentCreate>) =>
+  updateAgent: (id: string, patch: Partial<AgentCreate> & { api_key_id?: string }) =>
     request<Agent>('PATCH', `/api/v1/agents/${id}`, patch),
   deleteAgent: (id: string) => request<void>('DELETE', `/api/v1/agents/${id}`),
   controlAgent: (id: string, action: 'start' | 'pause' | 'stop') =>

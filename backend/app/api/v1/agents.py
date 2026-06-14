@@ -94,6 +94,10 @@ async def update_agent(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "pause the agent before editing its parameters"
         )
+    if body.api_key_id is not None:
+        key = await ApiKey.find_one(ApiKey.id == body.api_key_id, ApiKey.user_id == user.id)
+        if not key:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid api_key_id")
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(agent, field, value)
     await agent.save()

@@ -88,9 +88,11 @@ const signalColors: Record<string, string> = {
 function AgentCard({
   agent,
   onAction,
+  onEdit,
 }: {
   agent: Agent;
   onAction: (id: string, action: 'start' | 'pause' | 'stop') => Promise<void>;
+  onEdit: (agent: Agent) => void;
 }) {
   const sc = statusConfig[agent.status];
   const winRate =
@@ -269,8 +271,9 @@ function AgentCard({
           <Square className="w-3.5 h-3.5" />
         </button>
         <button
-          className="py-2 px-3 bg-accent hover:bg-accent/80 border border-border text-muted-foreground rounded-lg text-xs transition-all"
-          title="Edit (coming soon)"
+          onClick={() => onEdit(agent)}
+          className="py-2 px-3 bg-accent hover:bg-accent/80 border border-border text-muted-foreground hover:text-foreground rounded-lg text-xs transition-all"
+          title="Edit agent"
         >
           <Settings2 className="w-3.5 h-3.5" />
         </button>
@@ -311,6 +314,68 @@ export default function AgentsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
+
+  const [editTarget, setEditTarget] = useState<Agent | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editForm, setEditForm] = useState({
+    name: '',
+    api_key_id: '',
+    capital: 100,
+    riskPct: 2,
+    pairs: ['BTCUSDT'] as string[],
+    timeframe: '15m' as Timeframe,
+    isPaperTrade: false,
+  });
+
+  function openEdit(agent: Agent) {
+    setEditTarget(agent);
+    setEditError('');
+    setEditForm({
+      name: agent.name,
+      api_key_id: agent.api_key_id ?? '',
+      capital: agent.assigned_capital,
+      riskPct: agent.max_risk_per_trade,
+      pairs: agent.trading_pairs,
+      timeframe: agent.timeframe,
+      isPaperTrade: agent.is_paper_trade,
+    });
+  }
+
+  async function handleEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editTarget) return;
+    setEditSubmitting(true);
+    setEditError('');
+    try {
+      await api.updateAgent(editTarget.id, {
+        name: editForm.name,
+        api_key_id: editForm.api_key_id || undefined,
+        assigned_capital: editForm.capital,
+        trading_pairs: editForm.pairs,
+        timeframe: editForm.timeframe,
+        max_risk_per_trade: editForm.riskPct,
+        is_paper_trade: editForm.isPaperTrade,
+      });
+      await refetchAgents();
+      setEditTarget(null);
+    } catch (exc) {
+      setEditError((exc as Error).message);
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    if (!window.confirm('Delete this agent? This cannot be undone.')) return;
+    try {
+      await api.deleteAgent(id);
+      await refetchAgents();
+      setEditTarget(null);
+    } catch (exc) {
+      setEditError((exc as Error).message);
+    }
+  }
 
   const [form, setForm] = useState({
     name: '',
@@ -442,7 +507,7 @@ export default function AgentsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
         {list.map(agent => (
-          <AgentCard key={agent.id} agent={agent} onAction={handleAction} />
+          <AgentCard key={agent.id} agent={agent} onAction={handleAction} onEdit={openEdit} />
         ))}
         {list.length === 0 && agents !== null && (
           <div className="col-span-full text-center py-12 bg-card border border-dashed border-border rounded-xl">
@@ -477,6 +542,176 @@ export default function AgentsPage() {
           autonomous trading decisions.
         </p>
       </div>
+
+      {/* Edit Agent Dialog */}
+      <Dialog open={!!editTarget} onOpenChange={open => !open && setEditTarget(null)}>
+        <DialogContent className="bg-card border-border max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Agent</DialogTitle>
+          </DialogHeader>
+          {editTarget?.status === 'active' && (
+            <div className="px-3 py-2 bg-orange-500/5 border border-orange-500/20 rounded-lg text-[11px] text-orange-400">
+              Pause the agent before editing its settings.
+            </div>
+          )}
+          <form onSubmit={handleEdit} className="space-y-4 mt-1">
+            <div className="space-y-2">
+              <Label>Agent Name</Label>
+              <Input
+                value={editForm.name}
+                onChange={e => setEditForm(p => ({ ...p, name: e.target.value }))}
+                required
+                className="bg-background border-border"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Exchange Account</Label>
+                <Select
+                  value={editForm.api_key_id}
+                  onValueChange={v => setEditForm(p => ({ ...p, api_key_id: v }))}
+                >
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue placeholder="Select API key" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border">
+                    {(apiKeys ?? []).map(k => (
+                      <SelectItem key={k.id} value={k.id}>
+                        {k.label || `${k.exchange}${k.is_testnet ? ' (testnet)' : ''}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Assigned Capital (USDT)</Label>
+                <Input
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={editForm.capital}
+                  onChange={e => setEditForm(p => ({ ...p, capital: Number(e.target.value) }))}
+                  className="bg-background border-border"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Timeframe</Label>
+              <Select
+                value={editForm.timeframe}
+                onValueChange={v => setEditForm(p => ({ ...p, timeframe: v as Timeframe }))}
+              >
+                <SelectTrigger className="bg-background border-border">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-card border-border">
+                  {TIMEFRAMES.map(t => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Max Risk Per Trade:{' '}
+                <span className="text-primary font-mono">{editForm.riskPct}%</span>
+              </Label>
+              <Slider
+                min={0.5}
+                max={2}
+                step={0.5}
+                value={[editForm.riskPct]}
+                onValueChange={([v]) => setEditForm(p => ({ ...p, riskPct: v }))}
+                className="w-full"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Markets{' '}
+                <span className="text-muted-foreground font-normal">
+                  ({editForm.pairs.length} selected)
+                </span>
+              </Label>
+              <div className="flex flex-wrap gap-1.5 p-3 bg-background border border-border rounded-lg max-h-36 overflow-y-auto">
+                {MARKETS.map(m => {
+                  const selected = editForm.pairs.includes(m);
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() =>
+                        setEditForm(p => ({
+                          ...p,
+                          pairs: selected
+                            ? p.pairs.filter(x => x !== m)
+                            : [...p.pairs, m],
+                        }))
+                      }
+                      className={cn(
+                        'px-2 py-1 rounded-md text-[11px] font-mono font-medium border transition-all',
+                        selected
+                          ? 'bg-primary/15 border-primary/40 text-primary'
+                          : 'bg-accent/50 border-border text-muted-foreground hover:border-primary/20 hover:text-foreground',
+                      )}
+                    >
+                      {m.replace('USDT', '/USDT')}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-blue-500/5 border border-blue-500/15 rounded-lg">
+              <div>
+                <p className="text-xs font-medium text-blue-400">Paper Trading</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Simulates trades without hitting the exchange.
+                </p>
+              </div>
+              <Switch
+                checked={editForm.isPaperTrade}
+                onCheckedChange={v => setEditForm(p => ({ ...p, isPaperTrade: v }))}
+              />
+            </div>
+
+            {editError && (
+              <div className="text-xs text-red-400 bg-red-500/5 border border-red-500/20 rounded-lg px-3 py-2">
+                {editError}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => editTarget && handleDelete(editTarget.id)}
+                className="px-3 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/5 border border-red-500/20 rounded-lg transition-all"
+              >
+                Delete
+              </button>
+              <div className="flex-1" />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setEditTarget(null)}
+                className="border-border"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="bg-primary"
+                disabled={editSubmitting || editTarget?.status === 'active' || editForm.pairs.length === 0}
+              >
+                {editSubmitting ? 'Saving…' : 'Save Changes'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent className="bg-card border-border max-w-lg">
