@@ -28,7 +28,7 @@ from app.services.exchange.base import (
 )
 
 _RECV_WINDOW = "5000"
-_BINANCE_FUTURES_URL = "https://fapi.binance.com"
+_BINANCE_SPOT_URL = "https://api.binance.com"
 
 _TIMEFRAME_MAP = {
     "1m": "1",
@@ -58,9 +58,9 @@ class BybitClient(ExchangeClient):
         self._pub_http = httpx.AsyncClient(
             base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_headers
         )
-        # Binance USDT-M futures — unrestricted fallback for public candle/ticker data.
+        # Binance spot — unrestricted fallback for public candle/ticker data when Bybit is blocked.
         self._bin_http = httpx.AsyncClient(
-            base_url=_BINANCE_FUTURES_URL, timeout=httpx.Timeout(15.0), headers=_headers
+            base_url=_BINANCE_SPOT_URL, timeout=httpx.Timeout(15.0), headers=_headers
         )
 
     # -------- signing --------
@@ -172,15 +172,17 @@ class BybitClient(ExchangeClient):
 
     async def _binance_candles(self, symbol: str, interval: str, limit: int) -> list[Candle]:
         resp = await self._bin_http.get(
-            "/fapi/v1/klines",
+            "/api/v3/klines",
             params={"symbol": symbol, "interval": interval, "limit": limit},
         )
         try:
             rows = resp.json()
         except Exception as exc:
             raise ExchangeError(f"binance: non-json klines response {resp.status_code}") from exc
+        if isinstance(rows, dict):
+            raise ExchangeError(f"binance klines error {rows.get('code', '?')}: {rows.get('msg', rows)}")
         if not isinstance(rows, list):
-            raise ExchangeError("binance: unexpected klines format")
+            raise ExchangeError(f"binance: unexpected klines format ({type(rows).__name__})")
         # Binance returns oldest-first, each row: [open_time, open, high, low, close, volume, ...]
         return [
             Candle(
@@ -195,11 +197,13 @@ class BybitClient(ExchangeClient):
         ]
 
     async def _binance_ticker(self, symbol: str) -> Ticker:
-        resp = await self._bin_http.get("/fapi/v1/ticker/24hr", params={"symbol": symbol})
+        resp = await self._bin_http.get("/api/v3/ticker/24hr", params={"symbol": symbol})
         try:
             t = resp.json()
         except Exception as exc:
             raise ExchangeError(f"binance: non-json ticker response {resp.status_code}") from exc
+        if isinstance(t, dict) and "code" in t:
+            raise ExchangeError(f"binance ticker error {t.get('code', '?')}: {t.get('msg', t)}")
         if "lastPrice" not in t:
             raise ExchangeError(f"binance: no ticker data for {symbol}")
         return Ticker(
