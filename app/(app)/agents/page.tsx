@@ -34,6 +34,7 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { usePolling, useApiKeys, useStrategies } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
+import { Switch } from '@/components/ui/switch';
 import type { Agent, Timeframe } from '@/lib/api/types';
 
 const statusConfig = {
@@ -158,6 +159,11 @@ function AgentCard({
             {label}
           </span>
         ))}
+        {agent.is_paper_trade && (
+          <span className="flex items-center gap-1 px-2 py-0.5 bg-blue-500/10 border border-blue-500/20 rounded-md text-[10px] text-blue-400 font-medium">
+            Paper
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-4 gap-3">
@@ -315,6 +321,7 @@ export default function AgentsPage() {
     riskPct: 2,
     pairs: ['BTCUSDT'] as string[],
     timeframe: '15m' as Timeframe,
+    isPaperTrade: true,
   });
 
   async function handleAction(id: string, action: 'start' | 'pause' | 'stop') {
@@ -343,6 +350,7 @@ export default function AgentsPage() {
         trading_pairs: form.pairs,
         timeframe: form.timeframe,
         max_risk_per_trade: form.riskPct,
+        is_paper_trade: form.isPaperTrade,
       });
       await refetchAgents();
       setShowCreate(false);
@@ -355,6 +363,7 @@ export default function AgentsPage() {
         riskPct: 2,
         pairs: ['BTCUSDT'],
         timeframe: '15m',
+        isPaperTrade: true,
       });
     } catch (exc) {
       setFormError((exc as Error).message);
@@ -614,6 +623,19 @@ export default function AgentsPage() {
               {form.pairs.length === 0 && (
                 <p className="text-[10px] text-red-400">Select at least one market.</p>
               )}
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-blue-500/5 border border-blue-500/15 rounded-lg">
+              <div>
+                <p className="text-xs font-medium text-blue-400">Paper Trading</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Simulates trades without hitting the exchange — safe for testing.
+                </p>
+              </div>
+              <Switch
+                checked={form.isPaperTrade}
+                onCheckedChange={v => setForm(p => ({ ...p, isPaperTrade: v }))}
+              />
             </div>
 
             {formError && (

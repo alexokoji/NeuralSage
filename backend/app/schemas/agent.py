@@ -39,6 +39,7 @@ class AgentCreate(BaseModel):
     max_consecutive_losses: int = Field(default=3, ge=1, le=10)
     strategy_params: dict[str, Any] = Field(default_factory=dict)
     ai_optimization_enabled: bool = True
+    is_paper_trade: bool = False
 
 
 class AgentUpdate(BaseModel):
@@ -55,6 +56,7 @@ class AgentUpdate(BaseModel):
     max_consecutive_losses: int | None = Field(default=None, ge=1, le=10)
     strategy_params: dict[str, Any] | None = None
     ai_optimization_enabled: bool | None = None
+    is_paper_trade: bool | None = None
 
 
 class AgentPublic(BaseModel):
@@ -79,6 +81,7 @@ class AgentPublic(BaseModel):
     max_consecutive_losses: int
     strategy_params: dict[str, Any]
     ai_optimization_enabled: bool
+    is_paper_trade: bool
     optimization_params: dict[str, Any]
     total_pnl: float
     total_trades: int

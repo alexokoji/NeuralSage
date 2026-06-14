@@ -23,7 +23,7 @@ from app.models.api_key import ApiKey
 from app.models.position import Position
 from app.models.trade import Trade
 from app.services.exchange import OrderRequest, build_client
-from app.services.exchange.base import ExchangeError
+from app.services.exchange.base import ExchangeError, OrderResult
 import app.services.grok_analyst as grok_analyst
 from app.services.notifications import NotificationService
 from app.services.risk_engine import RiskEngine
@@ -248,18 +248,29 @@ class TradingEngine:
             take_profit=tp_price,
             client_order_id=f"agent-{agent.id}-{uuid.uuid4().hex[:8]}",
         )
-        try:
-            placed = await client.place_order(order)
-        except ExchangeError as exc:
-            await RiskEngine.log_risk_event(
-                user_id=agent.user_id,
-                agent_id=agent.id,
-                event_type="api_error",
-                severity="critical",
-                message=f"order placement failed: {exc}",
-                details={"symbol": symbol, "side": side},
+
+        if agent.is_paper_trade:
+            placed = OrderResult(
+                exchange_order_id=f"paper-{uuid.uuid4().hex[:12]}",
+                status="filled",
+                avg_fill_price=entry_price,
+                filled_qty=quantity,
+                raw={"paper": True},
             )
-            return
+        else:
+            try:
+                placed = await client.place_order(order)
+            except ExchangeError as exc:
+                agent.last_error = f"order failed: {exc}"
+                await RiskEngine.log_risk_event(
+                    user_id=agent.user_id,
+                    agent_id=agent.id,
+                    event_type="api_error",
+                    severity="critical",
+                    message=f"order placement failed: {exc}",
+                    details={"symbol": symbol, "side": side},
+                )
+                return
 
         trade = Trade(
             user_id=agent.user_id,
@@ -334,18 +345,20 @@ class TradingEngine:
             reduce_only=True,
             client_order_id=f"agent-{agent.id}-close-{uuid.uuid4().hex[:8]}",
         )
-        try:
-            await client.place_order(order)
-        except ExchangeError as exc:
-            await RiskEngine.log_risk_event(
-                user_id=agent.user_id,
-                agent_id=agent.id,
-                event_type="api_error",
-                severity="critical",
-                message=f"position close failed: {exc}",
-                details={"symbol": position.symbol},
-            )
-            return
+        if not agent.is_paper_trade:
+            try:
+                await client.place_order(order)
+            except ExchangeError as exc:
+                agent.last_error = f"close failed: {exc}"
+                await RiskEngine.log_risk_event(
+                    user_id=agent.user_id,
+                    agent_id=agent.id,
+                    event_type="api_error",
+                    severity="critical",
+                    message=f"position close failed: {exc}",
+                    details={"symbol": position.symbol},
+                )
+                return
 
         entry_price = float(position.entry_price)
         qty = float(position.quantity)

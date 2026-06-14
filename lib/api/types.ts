@@ -85,6 +85,7 @@ export interface Agent {
   max_consecutive_losses: number;
   strategy_params: Record<string, unknown>;
   ai_optimization_enabled: boolean;
+  is_paper_trade: boolean;
   optimization_params: Record<string, unknown>;
   total_pnl: number;
   total_trades: number;
@@ -120,6 +121,7 @@ export interface AgentCreate {
   max_consecutive_losses?: number;
   strategy_params?: Record<string, unknown>;
   ai_optimization_enabled?: boolean;
+  is_paper_trade?: boolean;
 }
 
 export interface Trade {
