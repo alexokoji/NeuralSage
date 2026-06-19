@@ -80,4 +80,25 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "name": settings.APP_NAME, "env": settings.APP_ENV}
 
 
+@app.get("/health/scheduler")
+async def health_scheduler() -> dict:
+    """Diagnostic: report whether the in-process scheduler is alive and what jobs it holds."""
+    if not settings.ENABLE_IN_PROCESS_SCHEDULER:
+        return {"enabled": False, "running": False, "jobs": []}
+    try:
+        from app.scheduler import get_scheduler
+        sched = get_scheduler()
+        jobs = [
+            {
+                "id": j.id,
+                "next_run": j.next_run_time.isoformat() if j.next_run_time else None,
+                "trigger": str(j.trigger),
+            }
+            for j in sched.get_jobs()
+        ]
+        return {"enabled": True, "running": sched.running, "jobs": jobs}
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "running": False, "error": str(exc)}
+
+
 app.include_router(api_router)

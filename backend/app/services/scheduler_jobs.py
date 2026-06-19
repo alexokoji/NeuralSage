@@ -33,10 +33,18 @@ async def run_trading_tick_for_all_agents() -> dict:
     skipped = 0
     failed = 0
 
-    agent_ids = [
-        a.id
-        for a in await Agent.find(Agent.status == "active").to_list()
-    ]
+    logger.debug("trading tick starting")
+
+    try:
+        agent_ids = [
+            a.id
+            for a in await Agent.find(Agent.status == "active").to_list()
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("trading tick: failed to query active agents: {}", exc)
+        return {"processed": 0, "skipped": 0, "failed": 0, "db_error": str(exc)}
+
+    logger.debug("trading tick: found {} active agent(s)", len(agent_ids))
 
     engine = TradingEngine()
     for agent_id in agent_ids:
@@ -55,13 +63,12 @@ async def run_trading_tick_for_all_agents() -> dict:
             failed += 1
             logger.exception("trading tick failed for agent {}: {}", agent_id, exc)
 
-    if processed or failed:
-        logger.info(
-            "trading tick complete: processed={} skipped={} failed={}",
-            processed,
-            skipped,
-            failed,
-        )
+    logger.info(
+        "trading tick complete: processed={} skipped={} failed={}",
+        processed,
+        skipped,
+        failed,
+    )
     return {"processed": processed, "skipped": skipped, "failed": failed}
 
 
