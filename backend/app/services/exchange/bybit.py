@@ -53,8 +53,18 @@ _OKX_INTERVAL_MAP = {
 }
 
 
+# Symbols that OKX lists under a different name than the Bybit convention.
+# Bybit symbol → OKX instId
+_OKX_SYMBOL_OVERRIDES: dict[str, str] = {
+    "MATICUSDT": "POL-USDT",   # MATIC was rebranded to POL on OKX
+    "TONUSDT": "TON-USDT",     # some OKX regions list as TON-USDT, others don't — skip via error
+}
+
+
 def _to_okx_symbol(symbol: str) -> str:
-    """BTCUSDT → BTC-USDT"""
+    """BTCUSDT → BTC-USDT, with known rebranding overrides applied."""
+    if symbol.upper() in _OKX_SYMBOL_OVERRIDES:
+        return _OKX_SYMBOL_OVERRIDES[symbol.upper()]
     s = symbol.upper()
     if s.endswith("USDT"):
         return s[:-4] + "-USDT"

@@ -108,21 +108,25 @@ class TradingEngine:
         )
         signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
-        signal = await grok_analyst.validate_signal(
-            signal,
-            df,
-            symbol=symbol,
-            timeframe=agent.timeframe,
-            strategy_type=strategy.type,
-            strategy_params=agent.strategy_params or {},
-            agent_context={
-                "agent_id": str(agent.id),
-                "total_trades": agent.total_trades,
-                "total_pnl": float(agent.total_pnl or 0),
-                "confidence_score": float(agent.confidence_score or 50),
-                "in_position": ctx.in_position,
-            },
-        )
+        # Only call Grok when there's actually a trade decision to validate —
+        # hold signals don't need AI review and burning the rate limit on them
+        # means enter/exit signals get 429'd instead.
+        if signal.action != "hold":
+            signal = await grok_analyst.validate_signal(
+                signal,
+                df,
+                symbol=symbol,
+                timeframe=agent.timeframe,
+                strategy_type=strategy.type,
+                strategy_params=agent.strategy_params or {},
+                agent_context={
+                    "agent_id": str(agent.id),
+                    "total_trades": agent.total_trades,
+                    "total_pnl": float(agent.total_pnl or 0),
+                    "confidence_score": float(agent.confidence_score or 50),
+                    "in_position": ctx.in_position,
+                },
+            )
 
         # Track what this tick produced — caller will save the agent.
         agent.last_signal = signal.action
