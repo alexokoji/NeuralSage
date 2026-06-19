@@ -448,12 +448,13 @@ export default function SettingsPage() {
                     <div className="space-y-1">
                       <p className="text-[10px] text-blue-400 font-medium">Setup (5 min, free):</p>
                       <ol className="text-[10px] text-muted-foreground space-y-1 list-decimal list-inside leading-relaxed">
-                        <li>Go to <strong>dash.cloudflare.com</strong> → Workers &amp; Pages → Create</li>
-                        <li>Name it <strong>bybit-testnet-proxy</strong>, paste the Worker code below</li>
-                        <li>Add env var <strong>PROXY_SECRET</strong> = any long random string</li>
-                        <li>Deploy, copy the <code className="text-blue-300">*.workers.dev</code> URL</li>
-                        <li>In Render: set <code className="text-blue-300">BYBIT_TESTNET_PROXY_URL</code> = Worker URL</li>
-                        <li>In Render: set <code className="text-blue-300">BYBIT_PROXY_SECRET</code> = same random string</li>
+                        <li><strong>dash.cloudflare.com</strong> → Workers &amp; Pages → <strong>Create application</strong> → <strong>Create Worker</strong></li>
+                        <li>Give it any name (e.g. <strong>bybit-testnet-proxy</strong>) → click <strong>Deploy</strong></li>
+                        <li>Click <strong>Edit code</strong>, replace everything with the Worker code below → <strong>Deploy</strong></li>
+                        <li>Go to Worker → <strong>Settings</strong> → <strong>Variables and Secrets</strong> → <strong>Add</strong> → type: Secret, name: <strong>PROXY_SECRET</strong>, value: any long random string → <strong>Deploy</strong></li>
+                        <li>Copy the <code className="text-blue-300">*.workers.dev</code> URL shown at the top</li>
+                        <li>In <strong>Render</strong> → Environment → add <code className="text-blue-300">BYBIT_TESTNET_PROXY_URL</code> = that URL</li>
+                        <li>In <strong>Render</strong> → add <code className="text-blue-300">BYBIT_PROXY_SECRET</code> = the same random string → redeploy</li>
                       </ol>
                     </div>
                     <div className="bg-background rounded p-2 font-mono text-[9px] text-muted-foreground leading-relaxed overflow-x-auto">
