@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Skill(deep-research)",
+      "Skill(deep-research:*)",
+      "WebFetch(domain:developers.cloudflare.com)"
+    ]
+  }
+}
