@@ -108,8 +108,8 @@ function buildAgentSeries(agents: Agent[]) {
 
 export default function DashboardPage() {
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | 'all'>('7d');
-  const { data: portfolio } = usePolling(() => api.portfolioOverview(), 15000);
-  const { data: trades } = usePolling(() => api.listTrades(50), 15000);
+  const { data: portfolio } = usePolling(() => api.portfolioOverview(), 5000);
+  const { data: trades } = usePolling(() => api.listTrades(50), 10000);
   const { data: agents } = useAgents();
   const { data: tickers } = useTickers();
 

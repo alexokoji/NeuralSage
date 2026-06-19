@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Bot,
@@ -94,6 +94,14 @@ function AgentCard({
   onAction: (id: string, action: 'start' | 'pause' | 'stop') => Promise<void>;
   onEdit: (agent: Agent) => void;
 }) {
+  // Re-render every second so "Last scan: Xs ago" and the Analysing badge
+  // update in real-time between API polls.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const sc = statusConfig[agent.status];
   const winRate =
     agent.total_trades > 0
@@ -306,7 +314,7 @@ const MARKETS = [
 export default function AgentsPage() {
   const { data: agents, refetch: refetchAgents, error: agentsError } = usePolling(
     () => api.listAgents(),
-    15_000,  // refresh every 15 s — matches the trading tick interval
+    5_000,  // poll every 5 s so the UI catches each backend tick within one cycle
   );
   const { data: apiKeys } = useApiKeys();
   const { data: strategies } = useStrategies();

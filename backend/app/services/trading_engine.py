@@ -87,12 +87,19 @@ class TradingEngine:
                 return min_q
         return cls._DEFAULT_MIN_QTY
 
+    # Symbols that persistently fail on all fallback providers — downgraded to
+    # debug so they don't pollute logs on every tick.
+    _KNOWN_UNAVAILABLE: frozenset[str] = frozenset({"TONUSDT"})
+
     async def _tick_symbol(self, agent: Agent, api_key, strategy, client, symbol: str) -> None:
         try:
             raw = await client.get_candles(symbol, agent.timeframe, limit=200)
         except ExchangeError as exc:
             agent.last_error = f"{symbol}: market data unavailable — {exc}"
-            logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
+            if symbol in self._KNOWN_UNAVAILABLE:
+                logger.debug("agent {} {}: skipped (no data source): {}", agent.id, symbol, exc)
+            else:
+                logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
             return
         if len(raw) < 50:
             return

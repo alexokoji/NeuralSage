@@ -18,12 +18,18 @@ Usage
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
 from loguru import logger
 
 from app.config import settings
+
+# Process-level 429 back-off state. When Groq rate-limits us we stop calling
+# for _RATE_LIMIT_BACKOFF_SECONDS so we don't hammer the endpoint every tick.
+_rate_limited_until: float = 0.0
+_RATE_LIMIT_BACKOFF_SECONDS = 60.0
 
 # Groq Cloud — OpenAI-compatible endpoint
 _BASE_URL = "https://api.groq.com/openai/v1"
@@ -134,6 +140,15 @@ class GrokClient:
         return payload
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        global _rate_limited_until
+
+        # Honour the back-off window set by a previous 429 response.
+        remaining = _rate_limited_until - time.monotonic()
+        if remaining > 0:
+            raise GrokError(
+                f"xAI rate limit — backing off for {remaining:.0f}s more"
+            )
+
         url = _BASE_URL + path
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -146,6 +161,11 @@ class GrokClient:
         if resp.status_code == 401:
             raise GrokUnavailableError("XAI_API_KEY is invalid (401)")
         if resp.status_code == 429:
+            _rate_limited_until = time.monotonic() + _RATE_LIMIT_BACKOFF_SECONDS
+            logger.warning(
+                "Groq rate-limited (429) — pausing Grok calls for {}s",
+                int(_RATE_LIMIT_BACKOFF_SECONDS),
+            )
             raise GrokError("xAI rate limit exceeded (429)")
         if not resp.is_success:
             raise GrokError(f"xAI {resp.status_code}: {resp.text[:300]}")
