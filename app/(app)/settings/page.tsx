@@ -435,14 +435,47 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 {newKey.exchange === 'bybit_testnet' && (
-                  <div className="p-3 bg-blue-500/5 border border-blue-500/15 rounded-lg">
-                    <p className="text-[10px] text-blue-400 font-medium mb-1">
-                      Bybit Testnet Note
+                  <div className="p-3 bg-blue-500/5 border border-blue-500/15 rounded-lg space-y-2">
+                    <p className="text-[10px] text-blue-400 font-medium">
+                      Bybit Testnet — Cloud Proxy Required
                     </p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Bybit testnet&apos;s Cloudflare WAF blocks cloud-hosting IPs (Render, AWS, GCP)
+                      for ALL requests including signed orders. To enable real testnet trading, deploy a
+                      free Cloudflare Worker proxy and set <code className="text-blue-300">BYBIT_TESTNET_PROXY_URL</code> in
+                      your Render environment variables.
+                    </p>
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-blue-400 font-medium">Setup (5 min, free):</p>
+                      <ol className="text-[10px] text-muted-foreground space-y-1 list-decimal list-inside leading-relaxed">
+                        <li>Go to <strong>dash.cloudflare.com</strong> → Workers &amp; Pages → Create</li>
+                        <li>Name it <strong>bybit-testnet-proxy</strong>, paste the Worker code below</li>
+                        <li>Add env var <strong>PROXY_SECRET</strong> = any long random string</li>
+                        <li>Deploy, copy the <code className="text-blue-300">*.workers.dev</code> URL</li>
+                        <li>In Render: set <code className="text-blue-300">BYBIT_TESTNET_PROXY_URL</code> = Worker URL</li>
+                        <li>In Render: set <code className="text-blue-300">BYBIT_PROXY_SECRET</code> = same random string</li>
+                      </ol>
+                    </div>
+                    <div className="bg-background rounded p-2 font-mono text-[9px] text-muted-foreground leading-relaxed overflow-x-auto">
+                      {`export default {
+  async fetch(request, env) {
+    const secret = request.headers.get('X-Proxy-Secret');
+    if (env.PROXY_SECRET && secret !== env.PROXY_SECRET)
+      return new Response('Forbidden', { status: 403 });
+    const url = new URL(request.url);
+    const target = 'https://api-testnet.bybit.com' + url.pathname + url.search;
+    const headers = new Headers(request.headers);
+    headers.delete('x-proxy-secret');
+    headers.delete('host');
+    const init = { method: request.method, headers };
+    if (request.method !== 'GET') init.body = request.body;
+    return fetch(target, init);
+  }
+};`}
+                    </div>
                     <p className="text-[10px] text-muted-foreground">
-                      Testnet verification may fail with a 403 from Bybit&apos;s CDN when running
-                      on cloud servers. If that happens, use <strong>Activate Anyway</strong> —
-                      your key is saved encrypted and agents will attempt trading normally.
+                      After adding the proxy, use <strong>Activate Anyway</strong> if verification
+                      still shows 403 (verification uses a direct path — trading will use the proxy).
                     </p>
                   </div>
                 )}

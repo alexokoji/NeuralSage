@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # Exchanges
     BYBIT_REST_URL: str = "https://api.bybit.com"
     BYBIT_TESTNET_REST_URL: str = "https://api-testnet.bybit.com"
+    # Optional Cloudflare Worker proxy for testnet signed requests.
+    # Bybit testnet blocks cloud-hosting IPs (AWS/Render) at the CDN level.
+    # Set this to a Workers URL to route testnet traffic through Cloudflare's
+    # own edge IPs, which bypass the WAF block.
+    # Example: https://bybit-proxy.yourname.workers.dev
+    BYBIT_TESTNET_PROXY_URL: str = ""
+    # Shared secret sent in X-Proxy-Secret header so only this backend can use
+    # the Worker. Set the same value in the Worker's PROXY_SECRET env var.
+    BYBIT_PROXY_SECRET: str = ""
     BYBIT_WS_PUBLIC_URL: str = "wss://stream.bybit.com/v5/public/linear"
     BYBIT_WS_PUBLIC_TESTNET_URL: str = "wss://stream-testnet.bybit.com/v5/public/linear"
     BITGET_REST_URL: str = "https://api.bitget.com"

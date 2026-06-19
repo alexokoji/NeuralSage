@@ -68,17 +68,31 @@ class BybitClient(ExchangeClient):
         self._key = api_key
         self._secret = api_secret.encode()
         self.is_testnet = is_testnet
-        signed_base = settings.BYBIT_TESTNET_REST_URL if is_testnet else settings.BYBIT_REST_URL
-        _headers = {"User-Agent": "NeuralSage/1.0"}
-        # Signed requests (orders, balance, verify) go to testnet when is_testnet.
-        self._http = httpx.AsyncClient(base_url=signed_base, timeout=httpx.Timeout(15.0), headers=_headers)
+
+        # Route testnet signed requests through a Cloudflare Worker proxy when
+        # BYBIT_TESTNET_PROXY_URL is set. The Worker forwards to api-testnet.bybit.com
+        # using Cloudflare edge IPs, bypassing the WAF block on cloud-hosting IPs.
+        if is_testnet and settings.BYBIT_TESTNET_PROXY_URL:
+            signed_base = settings.BYBIT_TESTNET_PROXY_URL
+            self._using_proxy = True
+        else:
+            signed_base = settings.BYBIT_TESTNET_REST_URL if is_testnet else settings.BYBIT_REST_URL
+            self._using_proxy = False
+
+        signed_headers: dict[str, str] = {"User-Agent": "NeuralSage/1.0"}
+        if self._using_proxy and settings.BYBIT_PROXY_SECRET:
+            signed_headers["X-Proxy-Secret"] = settings.BYBIT_PROXY_SECRET
+
+        _pub_headers = {"User-Agent": "NeuralSage/1.0"}
+        # Signed requests (orders, balance, verify) go to testnet/proxy when is_testnet.
+        self._http = httpx.AsyncClient(base_url=signed_base, timeout=httpx.Timeout(15.0), headers=signed_headers)
         # Public market data always tries mainnet first.
         self._pub_http = httpx.AsyncClient(
-            base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_headers
+            base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_pub_headers
         )
         # OKX public spot — fallback when Bybit is blocked by Cloudflare on cloud IPs.
         self._okx_http = httpx.AsyncClient(
-            base_url=_OKX_URL, timeout=httpx.Timeout(15.0), headers=_headers
+            base_url=_OKX_URL, timeout=httpx.Timeout(15.0), headers=_pub_headers
         )
 
     # -------- signing --------
@@ -127,10 +141,16 @@ class BybitClient(ExchangeClient):
         except Exception as exc:
             if resp.status_code == 403:
                 if self.is_testnet:
+                    if self._using_proxy:
+                        raise ExchangeError(
+                            "bybit testnet proxy returned 403 — the Cloudflare Worker may "
+                            "have rejected the X-Proxy-Secret, or Bybit's WAF still blocks "
+                            "Cloudflare Worker IPs. Check Worker logs at dash.cloudflare.com."
+                        ) from exc
                     raise ExchangeError(
-                        "bybit testnet blocks all requests from cloud hosting providers "
-                        "(Render, AWS, GCP) at the CDN level — this is not an API key "
-                        "setting. You must use a funded Bybit mainnet key for real trading."
+                        "bybit testnet blocks cloud hosting IPs (Render/AWS) at the CDN level. "
+                        "Set BYBIT_TESTNET_PROXY_URL in Render env vars to route through a "
+                        "Cloudflare Worker — see Settings → API Keys for setup instructions."
                     ) from exc
                 raise ExchangeError(
                     "bybit mainnet 403 — open Bybit → API Management → edit this key → "
