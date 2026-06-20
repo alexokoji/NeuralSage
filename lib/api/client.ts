@@ -82,6 +82,7 @@ async function request<T>(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    cache: 'no-store',
   });
 
   if (resp.status === 401 && retry) {
