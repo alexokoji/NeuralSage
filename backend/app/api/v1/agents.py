@@ -130,3 +130,23 @@ async def control_agent(
         agent.status = "stopped"
     await agent.save()
     return agent
+
+
+@router.post("/{agent_id}/force-tick")
+async def force_tick(
+    agent_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+):
+    """Run one trading tick immediately for this agent (ignores scheduler interval).
+    Useful for testing exchange connectivity end-to-end."""
+    agent = await _load_agent(agent_id, user)
+    if not agent.api_key_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "agent has no api key")
+
+    api_key = await ApiKey.get(agent.api_key_id)
+    if not api_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "api key not found")
+
+    from app.services.trading_engine import TradingEngine
+    result = await TradingEngine().run_agent_tick(agent, api_key)
+    return {"agent_id": str(agent_id), "result": result, "last_signal": agent.last_signal, "last_error": agent.last_error}
