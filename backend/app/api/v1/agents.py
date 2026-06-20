@@ -135,10 +135,15 @@ async def control_agent(
 @router.post("/{agent_id}/force-tick")
 async def force_tick(
     agent_id: uuid.UUID,
+    force_signal: str | None = None,
+    symbol: str = "BTCUSDT",
     user: User = Depends(get_current_user),
 ):
     """Run one trading tick immediately for this agent (ignores scheduler interval).
-    Useful for testing exchange connectivity end-to-end."""
+
+    Pass ?force_signal=enter_long&symbol=BTCUSDT to bypass the strategy and
+    place a real order directly — useful for testing exchange connectivity.
+    """
     agent = await _load_agent(agent_id, user)
     if not agent.api_key_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "agent has no api key")
@@ -146,6 +151,52 @@ async def force_tick(
     api_key = await ApiKey.get(agent.api_key_id)
     if not api_key:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "api key not found")
+
+    if force_signal in ("enter_long", "enter_short"):
+        from app.services.exchange import build_client
+        from app.services.exchange.base import ExchangeError
+        from app.services.strategy.base import Signal
+        from app.services.strategy.indicators import candles_to_df
+        from app.services.trading_engine import TradingEngine
+
+        engine = TradingEngine()
+        client = build_client(api_key)
+        try:
+            raw = await client.get_candles(symbol, agent.timeframe or "15m", limit=10)
+            last_price = float(candles_to_df(raw)["close"].iloc[-1])
+            signal = Signal(
+                force_signal,
+                confidence=1.0,
+                reason="force_signal (debug)",
+                suggested_stop_loss_pct=1.5,
+                suggested_take_profit_pct=3.0,
+            )
+            await engine._open_trade(
+                agent=agent,
+                api_key=api_key,
+                client=client,
+                symbol=symbol,
+                side="long" if force_signal == "enter_long" else "short",
+                entry_price=last_price,
+                quantity=engine._min_qty_for(symbol),
+                stop_loss_pct=1.5,
+                take_profit_pct=3.0,
+                signal=signal,
+                risk_payload={"approved": True, "reason": "force_signal", "risk_amount": 0, "sl_pct": 1.5, "tp_pct": 3.0},
+            )
+        except ExchangeError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+        finally:
+            await client.close()
+
+        return {
+            "agent_id": str(agent_id),
+            "forced": force_signal,
+            "symbol": symbol,
+            "price": last_price,
+            "paper": agent.is_paper_trade,
+            "last_error": agent.last_error,
+        }
 
     from app.services.trading_engine import TradingEngine
     result = await TradingEngine().run_agent_tick(agent, api_key)
