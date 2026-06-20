@@ -96,6 +96,17 @@ class BybitClient(ExchangeClient):
         _pub_headers = {"User-Agent": "NeuralSage/1.0"}
         # Signed requests (orders, balance, verify) go to testnet/proxy when is_testnet.
         self._http = httpx.AsyncClient(base_url=signed_base, timeout=httpx.Timeout(15.0), headers=signed_headers)
+        # When the proxy is in use, keep a direct-testnet client as a fallback for when
+        # the proxy returns 403. Bybit testnet is often reachable directly even from cloud IPs.
+        self._direct_http: httpx.AsyncClient | None = (
+            httpx.AsyncClient(
+                base_url=settings.BYBIT_TESTNET_REST_URL,
+                timeout=httpx.Timeout(15.0),
+                headers={"User-Agent": "NeuralSage/1.0"},
+            )
+            if self._using_proxy
+            else None
+        )
         # Public market data always tries mainnet first.
         self._pub_http = httpx.AsyncClient(
             base_url=settings.BYBIT_REST_URL, timeout=httpx.Timeout(15.0), headers=_pub_headers
@@ -150,13 +161,32 @@ class BybitClient(ExchangeClient):
             data = resp.json()
         except Exception as exc:
             if resp.status_code == 403:
-                if self.is_testnet:
-                    if self._using_proxy:
+                if self.is_testnet and self._using_proxy and self._direct_http is not None:
+                    # Proxy is broken — try going straight to api-testnet.bybit.com.
+                    # Testnet often doesn't enforce the same cloud-IP WAF as mainnet.
+                    logger.warning("bybit proxy returned 403 — retrying directly on api-testnet.bybit.com")
+                    ts2 = str(int(time.time() * 1000))
+                    if method.upper() == "GET":
+                        query2 = "&".join(f"{k}={v}" for k, v in sorted((params or {}).items()))
+                        sig2 = self._sign(ts2, query2)
+                        resp2 = await self._direct_http.get(path, params=params, headers=self._headers(ts2, sig2))
+                    else:
+                        payload2 = json.dumps(body or {}, separators=(",", ":"))
+                        sig2 = self._sign(ts2, payload2)
+                        resp2 = await self._direct_http.request(
+                            method, path, content=payload2, headers=self._headers(ts2, sig2)
+                        )
+                    try:
+                        data = resp2.json()
+                    except Exception as exc2:
                         raise ExchangeError(
-                            "bybit testnet proxy returned 403 — the Cloudflare Worker may "
-                            "have rejected the X-Proxy-Secret, or Bybit's WAF still blocks "
-                            "Cloudflare Worker IPs. Check Worker logs at dash.cloudflare.com."
-                        ) from exc
+                            f"bybit testnet unreachable via proxy (403) and directly ({resp2.status_code}). "
+                            "Check BYBIT_TESTNET_PROXY_URL in Render env vars or remove it to use direct testnet."
+                        ) from exc2
+                    if data.get("retCode") not in (0, "0"):
+                        raise ExchangeError(f"bybit error {data.get('retCode')}: {data.get('retMsg')}")
+                    return data.get("result") or {}
+                if self.is_testnet:
                     raise ExchangeError(
                         "bybit testnet blocks cloud hosting IPs (Render/AWS) at the CDN level. "
                         "Set BYBIT_TESTNET_PROXY_URL in Render env vars to route through a "
@@ -390,5 +420,7 @@ class BybitClient(ExchangeClient):
 
     async def close(self) -> None:
         await self._http.aclose()
+        if self._direct_http is not None:
+            await self._direct_http.aclose()
         await self._pub_http.aclose()
         await self._okx_http.aclose()
