@@ -164,7 +164,10 @@ class BybitClient(ExchangeClient):
                 if self.is_testnet and self._using_proxy and self._direct_http is not None:
                     # Proxy is broken — try going straight to api-testnet.bybit.com.
                     # Testnet often doesn't enforce the same cloud-IP WAF as mainnet.
-                    logger.warning("bybit proxy returned 403 — retrying directly on api-testnet.bybit.com")
+                    logger.warning(
+                        "bybit proxy returned 403 — body={!r} — retrying directly on api-testnet.bybit.com",
+                        resp.text[:120],
+                    )
                     ts2 = str(int(time.time() * 1000))
                     if method.upper() == "GET":
                         query2 = "&".join(f"{k}={v}" for k, v in sorted((params or {}).items()))
