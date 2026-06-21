@@ -118,8 +118,8 @@ function AgentCard({
       const data = await api.agentSuggestions(agent.id);
       setSuggestions(data);
       setShowSuggestions(true);
-    } catch {
-      setSuggestions({ suggestions: [], risk_assessment: 'Failed to load suggestions' });
+    } catch (err: any) {
+      setSuggestions({ suggestions: [], risk_assessment: err?.message || 'Failed to reach AI service — check that GROQ_API_KEY is set in Render.' });
       setShowSuggestions(true);
     } finally {
       setLoadingSuggestions(false);

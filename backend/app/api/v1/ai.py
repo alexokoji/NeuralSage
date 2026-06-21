@@ -116,18 +116,22 @@ async def agent_suggestions(
         from fastapi import HTTPException
         raise HTTPException(404, "agent not found")
 
-    recent_trades = await Trade.find(
-        Trade.agent_id == aid, Trade.status == "filled",
-    ).sort(-Trade.closed_at).limit(15).to_list()
+    try:
+        recent_trades = await Trade.find(
+            Trade.agent_id == aid,
+        ).sort(-Trade.opened_at).limit(15).to_list()
+    except Exception:
+        recent_trades = []
 
     trade_dicts = [
         {
             "symbol": t.symbol,
             "side": t.side,
+            "status": t.status,
             "pnl": float(t.pnl or 0),
             "pnl_pct": float(t.pnl_pct or 0),
             "entry_price": float(t.entry_price or 0),
-            "exit_price": float(t.exit_price or 0),
+            "exit_price": float(t.exit_price or 0) if t.exit_price else None,
             "opened_at": t.opened_at.isoformat() if t.opened_at else None,
             "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         }
@@ -151,7 +155,15 @@ async def agent_suggestions(
         "tick_count": agent.tick_count,
     }
 
-    result = await grok_analyst.suggest_agent_tweaks(agent_data, trade_dicts)
+    try:
+        result = await grok_analyst.suggest_agent_tweaks(agent_data, trade_dicts)
+    except Exception as exc:
+        result = {
+            "suggestions": [],
+            "risk_assessment": f"AI analysis temporarily unavailable: {exc}",
+            "recommended_params": None,
+            "timeframe_advice": None,
+        }
     return {"agent_id": agent_id, **result}
 
 
