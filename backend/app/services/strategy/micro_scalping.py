@@ -19,10 +19,10 @@ class MicroScalpingStrategy(Strategy):
         "ema_period": 8,
         "deviation_pct": 0.25,
         "profit_target_pct": 0.3,
-        "stop_loss_pct": 0.2,
-        "max_trades_per_hour": 10,
-        "position_size_pct": 2.0,
-        "min_confidence": 0.5,
+        "stop_loss_pct": 0.15,
+        "max_trades_per_hour": 6,
+        "position_size_pct": 1.5,
+        "min_confidence": 0.6,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:

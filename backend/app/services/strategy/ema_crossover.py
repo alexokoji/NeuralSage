@@ -19,10 +19,10 @@ class EMACrossoverStrategy(Strategy):
     default_params: dict[str, Any] = {
         "fast_ema": 9,
         "slow_ema": 21,
-        "stop_loss_pct": 1.5,
-        "take_profit_pct": 3.0,
-        "position_size_pct": 5.0,
-        "min_confidence": 0.55,
+        "stop_loss_pct": 1.0,
+        "take_profit_pct": 2.5,
+        "position_size_pct": 3.0,
+        "min_confidence": 0.6,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:

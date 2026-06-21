@@ -154,9 +154,18 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
+            # Reject low-confidence entries — capital preservation first.
+            if signal.confidence < 0.55:
+                agent.last_error = f"signal rejected: confidence {signal.confidence:.2f} < 0.55 threshold"
+                logger.debug(
+                    "agent {} {}: entry rejected (confidence {:.2f} too low)",
+                    agent.id, symbol, signal.confidence,
+                )
+                return
+
             side: str = "long" if signal.action == "enter_long" else "short"
-            sl_pct = signal.suggested_stop_loss_pct or 1.5
-            tp_pct = signal.suggested_take_profit_pct or 3.0
+            sl_pct = signal.suggested_stop_loss_pct or 1.0
+            tp_pct = signal.suggested_take_profit_pct or 2.5
 
             decision = await RiskEngine.evaluate_entry(
                 agent,

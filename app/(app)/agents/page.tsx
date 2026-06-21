@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Bot,
@@ -14,6 +14,8 @@ import {
   Target,
   Shield,
   Activity,
+  Lightbulb,
+  Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -101,6 +103,28 @@ function AgentCard({
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  const [suggestions, setSuggestions] = useState<{
+    suggestions: { param: string; current: string; recommended: string; reason: string }[];
+    risk_assessment: string;
+    timeframe_advice?: string;
+  } | null>(null);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const fetchSuggestions = useCallback(async () => {
+    setLoadingSuggestions(true);
+    try {
+      const data = await api.agentSuggestions(agent.id);
+      setSuggestions(data);
+      setShowSuggestions(true);
+    } catch {
+      setSuggestions({ suggestions: [], risk_assessment: 'Failed to load suggestions' });
+      setShowSuggestions(true);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, [agent.id]);
 
   const sc = statusConfig[agent.status];
   const winRate =
@@ -285,7 +309,54 @@ function AgentCard({
         >
           <Settings2 className="w-3.5 h-3.5" />
         </button>
+        <button
+          onClick={fetchSuggestions}
+          disabled={loadingSuggestions}
+          className="py-2 px-3 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 text-cyan-400 rounded-lg text-xs transition-all"
+          title="AI Suggestions"
+        >
+          {loadingSuggestions ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lightbulb className="w-3.5 h-3.5" />}
+        </button>
       </div>
+
+      {showSuggestions && suggestions && (
+        <div className="border-t border-border pt-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-cyan-400 flex items-center gap-1">
+              <Lightbulb className="w-3 h-3" /> AI Suggestions
+            </span>
+            <button onClick={() => setShowSuggestions(false)} className="text-[10px] text-muted-foreground hover:text-foreground">
+              Hide
+            </button>
+          </div>
+          {suggestions.risk_assessment && (
+            <p className="text-[10px] text-orange-400 bg-orange-500/5 border border-orange-500/20 rounded-md px-2 py-1.5">
+              {suggestions.risk_assessment}
+            </p>
+          )}
+          {suggestions.timeframe_advice && (
+            <p className="text-[10px] text-muted-foreground bg-accent rounded-md px-2 py-1.5">
+              <span className="font-semibold">Timeframe:</span> {suggestions.timeframe_advice}
+            </p>
+          )}
+          {suggestions.suggestions.map((s, i) => (
+            <div key={i} className="bg-accent rounded-md px-2.5 py-2 space-y-0.5">
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="font-semibold text-foreground">{s.param}</span>
+                <span className="font-mono">
+                  <span className="text-red-400 line-through">{s.current}</span>
+                  {' → '}
+                  <span className="text-green-400">{s.recommended}</span>
+                </span>
+              </div>
+              <p className="text-[9px] text-muted-foreground">{s.reason}</p>
+            </div>
+          ))}
+          {suggestions.suggestions.length === 0 && (
+            <p className="text-[10px] text-muted-foreground text-center py-2">No changes recommended at this time.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -15,10 +15,10 @@ class BreakoutStrategy(Strategy):
         "lookback_period": 20,
         "breakout_threshold_pct": 0.5,  # min move past prior high/low, in %
         "volume_multiplier": 1.5,
-        "stop_loss_pct": 1.2,
+        "stop_loss_pct": 1.0,
         "take_profit_pct": 2.5,
-        "position_size_pct": 4.0,
-        "min_confidence": 0.55,
+        "position_size_pct": 3.0,
+        "min_confidence": 0.6,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:

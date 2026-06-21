@@ -16,10 +16,10 @@ class RSIEntryStrategy(Strategy):
         "oversold": 30,
         "overbought": 70,
         "trend_ema": 50,
-        "stop_loss_pct": 1.0,
+        "stop_loss_pct": 0.8,
         "take_profit_pct": 2.0,
-        "position_size_pct": 3.0,
-        "min_confidence": 0.5,
+        "position_size_pct": 2.0,
+        "min_confidence": 0.6,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:

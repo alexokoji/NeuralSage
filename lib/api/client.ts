@@ -183,6 +183,14 @@ export const api = {
       `/api/v1/ai/fleet-insight${qs}`,
     );
   },
+  agentSuggestions: (agentId: string) =>
+    request<{
+      agent_id: string;
+      suggestions: { param: string; current: string; recommended: string; reason: string }[];
+      risk_assessment: string;
+      recommended_params: Record<string, number> | null;
+      timeframe_advice: string;
+    }>('GET', `/api/v1/ai/agent-suggestions/${agentId}`),
 };
 
 export { ApiError };

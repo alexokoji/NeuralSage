@@ -96,6 +96,61 @@ async def ai_chat(
     return ChatResponse(reply=reply)
 
 
+@router.get("/agent-suggestions/{agent_id}")
+async def agent_suggestions(
+    agent_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Get AI-powered suggestions for improving an agent's parameters."""
+    import uuid
+    from app.models.agent import Agent
+    from app.models.trade import Trade
+
+    aid = uuid.UUID(agent_id)
+    agent = await Agent.get(aid)
+    if not agent or agent.user_id != user.id:
+        from fastapi import HTTPException
+        raise HTTPException(404, "agent not found")
+
+    recent_trades = await Trade.find(
+        Trade.agent_id == aid, Trade.status == "filled",
+    ).sort(-Trade.closed_at).limit(15).to_list()
+
+    trade_dicts = [
+        {
+            "symbol": t.symbol,
+            "side": t.side,
+            "pnl": float(t.pnl or 0),
+            "pnl_pct": float(t.pnl_pct or 0),
+            "entry_price": float(t.entry_price or 0),
+            "exit_price": float(t.exit_price or 0),
+            "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        }
+        for t in recent_trades
+    ]
+
+    agent_data = {
+        "name": agent.name,
+        "strategy": agent.strategy.type if agent.strategy else None,
+        "strategy_params": agent.strategy_params or {},
+        "trading_pairs": agent.trading_pairs,
+        "timeframe": agent.timeframe,
+        "assigned_capital": float(agent.assigned_capital),
+        "max_risk_per_trade": float(agent.max_risk_per_trade),
+        "max_daily_loss": float(agent.max_daily_loss),
+        "total_trades": agent.total_trades,
+        "winning_trades": agent.winning_trades,
+        "total_pnl": float(agent.total_pnl),
+        "current_day_pnl": float(agent.current_day_pnl or 0),
+        "confidence_score": float(agent.confidence_score),
+        "tick_count": agent.tick_count,
+    }
+
+    result = await grok_analyst.suggest_agent_tweaks(agent_data, trade_dicts)
+    return {"agent_id": agent_id, **result}
+
+
 @router.get("/fleet-insight", response_model=FleetInsightResponse)
 async def fleet_insight(
     strategy_type: str = Query(..., description="Strategy type e.g. ema_crossover"),

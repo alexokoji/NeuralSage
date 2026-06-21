@@ -84,7 +84,9 @@ Rules you must follow:
 - Be concise and precise. No waffle.
 - When asked for JSON output, return ONLY valid JSON — no markdown fences, no commentary.
 - Never invent price levels or statistics not present in the supplied data.
-- Risk management is paramount: when uncertain, prefer caution (hold / reduce confidence).
+- CAPITAL PRESERVATION IS YOUR #1 PRIORITY. When uncertain, ALWAYS hold. A missed trade is free; a bad trade costs money.
+- Only approve entries when multiple indicators align and the risk/reward is clearly favourable (at least 2:1).
+- On short timeframes (1m–15m), be EXTRA cautious — noise is high, false signals are common.
 - Monetary values are in USDT unless stated otherwise.
 - When the user asks about a coin price, look it up in live_market_prices before responding.
 """
@@ -148,10 +150,19 @@ Respond with a JSON object:
   "suggested_take_profit_pct": <float or null>
 }}
 
-Rules:
-- You may keep, tighten, or override the action. Never introduce a new direction without strong evidence.
-- If the candle data is inconclusive or contradicts the signal, change action to "hold".
-- Keep confidence strictly between 0.3 and 0.95.
+STRICT RULES — capital preservation first:
+- DEFAULT TO HOLD. Only approve an entry if you see clear, multi-signal confirmation.
+- If even ONE of these is true, override to "hold":
+  * The trend direction is ambiguous or sideways
+  * Volume is declining or below average
+  * The last 3-5 candles show indecision (dojis, long wicks)
+  * The entry is chasing a move that already happened (late entry)
+  * Risk/reward ratio is below 2:1
+- On short timeframes (1m, 5m, 15m): require STRONGER confirmation than on 1h/4h. Noise is high.
+- If the agent has recent losses (check agent state), raise your bar even higher.
+- Tighten stop losses when you see high volatility. Widen take profits only when trend is strong.
+- Keep confidence strictly between 0.3 and 0.85 (never higher — overconfidence kills accounts).
+- When in doubt: HOLD. A missed trade costs nothing; a bad trade costs capital.
 """
     try:
         result = await client.chat_json(
@@ -163,7 +174,7 @@ Rules:
         if action not in ("enter_long", "enter_short", "exit", "hold"):
             action = signal.action
         confidence = float(result.get("confidence", signal.confidence))
-        confidence = max(0.3, min(0.95, confidence))
+        confidence = max(0.3, min(0.85, confidence))
         return Signal(
             action=action,
             confidence=confidence,
@@ -272,6 +283,70 @@ Write a 2–4 sentence summary (plain text, no markdown) covering:
     except GrokError as exc:
         logger.warning("Grok fleet insight failed: {}", exc)
         return "Fleet insight temporarily unavailable."
+
+
+async def suggest_agent_tweaks(
+    agent_data: dict[str, Any],
+    recent_trades: list[dict[str, Any]],
+    market_summary: str = "",
+) -> dict[str, Any]:
+    """Analyse an agent's performance and suggest parameter changes.
+
+    Returns a dict with keys: suggestions (list of actionable tweaks),
+    risk_assessment (str), and recommended_params (dict or null).
+    """
+    try:
+        client = GrokClient()
+    except GrokUnavailableError:
+        return {"suggestions": [], "risk_assessment": "AI unavailable", "recommended_params": None}
+
+    trades_text = json.dumps(recent_trades[:15], indent=2) if recent_trades else "No trades yet"
+    prompt = f"""Analyse this trading agent and suggest parameter improvements:
+
+Agent config:
+{json.dumps(agent_data, indent=2)}
+
+Recent trades (newest first):
+{trades_text}
+
+{f"Current market: {market_summary}" if market_summary else ""}
+
+Respond with a JSON object:
+{{
+  "suggestions": [
+    {{
+      "param": "<parameter name or general setting>",
+      "current": "<current value or description>",
+      "recommended": "<recommended value>",
+      "reason": "<why this change would help — one sentence>"
+    }}
+  ],
+  "risk_assessment": "<1-2 sentence assessment of this agent's risk exposure>",
+  "recommended_params": {{<full recommended strategy_params dict, or null if no changes needed>}},
+  "timeframe_advice": "<is the current timeframe appropriate? suggest better if not>"
+}}
+
+Guidelines:
+- Focus on LOSS PREVENTION first, profit second.
+- If the agent has consecutive losses, suggest tighter stops and higher entry thresholds.
+- For short timeframes (1m-15m), recommend tighter stop losses (0.5-1%) and modest take profits (1-2%).
+- For longer timeframes (1h-4h), allow wider stops (1.5-3%) and bigger targets (3-6%).
+- If win rate is below 40%, suggest switching strategy or widening filters.
+- Suggest reducing position size if drawdown is high.
+- Maximum 4 suggestions, ordered by impact.
+"""
+    try:
+        result = await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system=_TRADING_SYSTEM,
+            mini=False,
+        )
+        if not isinstance(result.get("suggestions"), list):
+            result["suggestions"] = []
+        return result
+    except GrokError as exc:
+        logger.warning("Grok agent tweaks failed: {}", exc)
+        return {"suggestions": [], "risk_assessment": "Analysis temporarily unavailable", "recommended_params": None}
 
 
 async def chat(
