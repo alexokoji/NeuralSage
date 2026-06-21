@@ -1,8 +1,8 @@
 'use client';
 
-// Tiny data-fetching hooks. We avoid pulling SWR/React-Query to keep
-// the bundle lean and the wiring obvious. Each hook exposes
-// {data, loading, error, refetch} and refetches on focus.
+// Data-fetching hooks with auto-polling and focus-refetch.
+// Every hook polls on an interval AND refetches when the browser tab
+// regains focus — so data is always live without manual reload.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -53,23 +53,32 @@ function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []): AsyncState
   return { data, loading, error, refetch };
 }
 
-export const useApiKeys = () => useAsync<ApiKey[]>(() => api.listApiKeys(), []);
-export const useStrategies = () => useAsync<Strategy[]>(() => api.listStrategies(), []);
-export const useAgents = () => useAsync<Agent[]>(() => api.listAgents(), []);
-export const useTrades = (limit = 50) => useAsync<Trade[]>(() => api.listTrades(limit), [limit]);
-export const usePositions = () => useAsync<Position[]>(() => api.listPositions(), []);
-export const usePortfolio = () => useAsync<PortfolioOverview>(() => api.portfolioOverview(), []);
-export const useTickers = (symbols?: string[]) =>
-  useAsync<MarketTicker[]>(() => api.tickers(symbols), [symbols?.join(',')]);
-export const useNotifications = () => useAsync<Notification[]>(() => api.listNotifications(), []);
-
-// Polling variant for dashboards that should auto-refresh.
+// Polling hook: auto-refreshes on interval + on window focus.
 export function usePolling<T>(loader: () => Promise<T>, intervalMs: number, deps: unknown[] = []): AsyncState<T> {
   const state = useAsync(loader, deps);
   useEffect(() => {
     const id = setInterval(state.refetch, intervalMs);
-    return () => clearInterval(id);
+
+    // Refetch immediately when user returns to the tab
+    const onFocus = () => state.refetch();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', onFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intervalMs]);
   return state;
 }
+
+// All data hooks now auto-poll so pages stay live without manual reload.
+export const useApiKeys = () => usePolling<ApiKey[]>(() => api.listApiKeys(), 15_000);
+export const useStrategies = () => useAsync<Strategy[]>(() => api.listStrategies(), []);
+export const useAgents = () => usePolling<Agent[]>(() => api.listAgents(), 5_000);
+export const useTrades = (limit = 50) => usePolling<Trade[]>(() => api.listTrades(limit), 8_000);
+export const usePositions = () => usePolling<Position[]>(() => api.listPositions(), 8_000);
+export const usePortfolio = () => usePolling<PortfolioOverview>(() => api.portfolioOverview(), 5_000);
+export const useTickers = (symbols?: string[]) =>
+  usePolling<MarketTicker[]>(() => api.tickers(symbols), 10_000);
+export const useNotifications = () => usePolling<Notification[]>(() => api.listNotifications(), 10_000);
