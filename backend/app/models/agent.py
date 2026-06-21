@@ -60,6 +60,11 @@ class Agent(Document):
     # When True, orders are simulated locally — no exchange API calls for entry/exit.
     is_paper_trade: bool = False
 
+    # Recovery mode: set after emergency re-optimization. The risk engine allows
+    # one carefully-sized trade to break the consecutive loss streak. Cleared
+    # once a trade opens successfully.
+    recovery_mode: bool = False
+
     # Activity tracking — updated every scheduler tick so the UI can show live state
     last_tick_at: Optional[datetime] = None
     last_signal: Optional[str] = None          # "hold" | "enter_long" | "enter_short" | "exit"

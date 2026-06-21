@@ -92,7 +92,7 @@ class RiskEngine:
 
         streak = await cls._consecutive_loss_streak(agent.id)
         max_streak = min(agent.max_consecutive_losses or 99, settings.MAX_CONSECUTIVE_LOSSES)
-        if streak >= max_streak:
+        if streak >= max_streak and not agent.recovery_mode:
             return RiskDecision(
                 False,
                 f"consecutive losses ({streak}) reached limit ({max_streak})",
@@ -119,7 +119,14 @@ class RiskEngine:
         if qty <= 0:
             return RiskDecision(False, "position sized to zero", "max_risk_per_trade")
 
-        return RiskDecision(True, "ok", "ok", sized_quantity=qty, risk_amount=risk_dollars)
+        # In recovery mode: halve position size to limit exposure while the
+        # agent proves its new params work.
+        if agent.recovery_mode:
+            qty *= 0.5
+            risk_dollars *= 0.5
+
+        reason = "ok (recovery — half size)" if agent.recovery_mode else "ok"
+        return RiskDecision(True, reason, "ok", sized_quantity=qty, risk_amount=risk_dollars)
 
     @staticmethod
     async def _open_position_count(agent_id) -> int:

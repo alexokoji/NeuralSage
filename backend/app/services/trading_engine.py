@@ -335,6 +335,9 @@ class TradingEngine:
         agent.total_trades = (agent.total_trades or 0) + 1
         agent.last_trade_at = datetime.now(timezone.utc)
         agent.confidence_score = max(0, min(100, 50 + (signal.confidence - 0.5) * 100))
+        if agent.recovery_mode:
+            agent.recovery_mode = False
+            logger.info("agent {} recovery trade opened — recovery mode cleared", agent.id)
         await agent.save()
 
         await NotificationService.create(
@@ -443,7 +446,16 @@ class TradingEngine:
                 logger.debug("emergency optimize skipped for {}: {}", agent.id, exc)
 
     async def _maybe_emergency_optimize(self, agent: Agent, symbol: str) -> None:
-        """Trigger immediate re-optimization if the agent has 3+ consecutive losses."""
+        """Trigger immediate re-optimization if the agent has 3+ consecutive losses.
+
+        Recovery flow:
+        1. Count consecutive losses
+        2. Study what other profitable agents are doing (fleet warm starts)
+        3. Re-optimize with Bayesian search seeded from fleet winners
+        4. Tighten risk params (lower stop loss, higher confidence threshold)
+        5. Enable recovery_mode → risk engine allows one half-size trade
+        6. Once the recovery trade succeeds, recovery_mode clears
+        """
         loss_streak = 0
         recent = await Trade.find(
             Trade.agent_id == agent.id, Trade.status == "filled", Trade.closed_at != None,
@@ -462,7 +474,7 @@ class TradingEngine:
             return
 
         logger.warning(
-            "agent {} hit {} consecutive losses — triggering emergency re-optimization",
+            "agent {} hit {} consecutive losses — studying fleet winners and re-optimizing",
             agent.id, loss_streak,
         )
 
@@ -489,13 +501,34 @@ class TradingEngine:
 
         df = candles_to_df(candles)
 
+        # Study what other agents are doing well — pull fleet-wide winners
         warm_starts = await LearningService.warm_starts(
             strategy_type=strategy_type,
             symbol=symbol,
             timeframe=agent.timeframe,
         )
 
-        base = {**(strat.default_params or {}), **(agent.strategy_params or {})}
+        # Also look for the best-performing agent on this strategy to learn from
+        best_fleet = await LearningService.fleet_best(
+            strategy_type=strategy_type, symbol=symbol, limit=3,
+        )
+        # If fleet has proven winning params with positive realized PnL, prefer those
+        fleet_winner_params = None
+        for obs in best_fleet:
+            if float(obs.realized_pnl or 0) > 0 and int(obs.realized_trades or 0) >= 3:
+                fleet_winner_params = dict(obs.params)
+                logger.info(
+                    "agent {} adopting fleet winner params (realized_pnl={:.2f}, trades={}): {}",
+                    agent.id, obs.realized_pnl, obs.realized_trades, obs.params,
+                )
+                break
+
+        # Start from fleet winner params if available, otherwise from current + defaults
+        if fleet_winner_params:
+            base = {**(strat.default_params or {}), **fleet_winner_params}
+        else:
+            base = {**(strat.default_params or {}), **(agent.strategy_params or {})}
+
         result = await optimize_strategy_async(
             strat, df, base,
             symbol=symbol,
@@ -504,24 +537,38 @@ class TradingEngine:
             n_calls=15,
         )
 
-        agent.strategy_params = result.best_params
+        # Apply tighter risk overrides on top of optimized params
+        new_params = dict(result.best_params)
+        if "stop_loss_pct" in new_params:
+            new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], 0.8)
+        if "min_confidence" in new_params:
+            new_params["min_confidence"] = max(new_params["min_confidence"], 0.7)
+        if "position_size_pct" in new_params:
+            new_params["position_size_pct"] = min(new_params["position_size_pct"], 1.5)
+
+        agent.strategy_params = new_params
+        agent.recovery_mode = True
         agent.optimization_params = {
             "score": result.best_score,
             "trigger": "emergency_loss_streak",
             "loss_streak": loss_streak,
             "iterations": result.iterations,
+            "adopted_fleet_winner": fleet_winner_params is not None,
         }
         await agent.save()
 
         logger.info(
-            "agent {} emergency re-optimized: score={:.4f} params={}",
-            agent.id, result.best_score, result.best_params,
+            "agent {} emergency re-optimized (recovery mode ON): score={:.4f} fleet_winner={} params={}",
+            agent.id, result.best_score, fleet_winner_params is not None, new_params,
         )
 
         await NotificationService.create(
             user_id=agent.user_id,
             type="agent_optimized",
-            title=f"{agent.name} auto-adjusted after {loss_streak} losses",
-            message=f"Strategy params re-optimized (score: {result.best_score:.3f})",
-            data={"agent_id": str(agent.id), "trigger": "loss_streak"},
+            title=f"{agent.name} recovering after {loss_streak} losses",
+            message=(
+                f"Studied fleet winners, re-optimized params (score: {result.best_score:.3f}). "
+                f"Now in recovery mode — next trade at half size to prove new params work."
+            ),
+            data={"agent_id": str(agent.id), "trigger": "loss_streak", "recovery": True},
         )
