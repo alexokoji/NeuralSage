@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = True
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
-    APP_CORS_ORIGINS: str = "http://localhost:3000"
+    APP_CORS_ORIGINS: str = "http://localhost:3000,https://neural-sage-two.vercel.app"
 
     # MongoDB — only MONGODB_URL is required.
     # Use a free cluster at https://cloud.mongodb.com or a local mongod instance.
