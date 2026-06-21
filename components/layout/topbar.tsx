@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { Menu, TrendingUp, TrendingDown } from 'lucide-react';
 import { usePolling } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
+import { NotificationBell } from './notification-bell';
 
 const pageTitles: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -87,8 +88,11 @@ export function Topbar({ onMobileMenuClick }: TopbarProps) {
         ))}
       </div>
 
-      <div className="text-[11px] md:text-xs text-muted-foreground font-mono shrink-0">
-        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} UTC
+      <div className="flex items-center gap-2 shrink-0">
+        <NotificationBell />
+        <div className="text-[11px] md:text-xs text-muted-foreground font-mono">
+          {new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })} WAT
+        </div>
       </div>
     </header>
   );
