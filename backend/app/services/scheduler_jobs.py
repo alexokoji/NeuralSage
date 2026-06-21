@@ -57,6 +57,25 @@ async def run_trading_tick_for_all_agents() -> dict:
             if not api_key:
                 skipped += 1
                 continue
+
+            # Auto-unblock agents stuck with consecutive losses by enabling
+            # recovery mode. The AI validation is the real gatekeeper now.
+            if not agent.recovery_mode:
+                from app.models.trade import Trade
+                recent = await Trade.find(
+                    Trade.agent_id == agent.id, Trade.status == "filled",
+                ).sort(-Trade.opened_at).limit(5).to_list()
+                streak = 0
+                for t in recent:
+                    if float(t.pnl or 0) < 0:
+                        streak += 1
+                    else:
+                        break
+                if streak >= 3:
+                    agent.recovery_mode = True
+                    await agent.save()
+                    logger.info("auto-unblocked agent {} ({}): {} consecutive losses -> recovery mode", agent.id, agent.name, streak)
+
             await engine.run_agent_tick(agent, api_key)
             processed += 1
         except Exception as exc:  # noqa: BLE001

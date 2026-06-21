@@ -437,44 +437,44 @@ class TradingEngine:
         )
 
         # Emergency re-optimization: if the agent just hit 3 consecutive losses,
-        # trigger an immediate parameter re-tune instead of waiting for the
-        # scheduled sweep. This stops bleeding faster.
+        # enable recovery mode immediately (so it can trade again), then try
+        # to re-optimize as best-effort.
         if gross < 0:
-            try:
-                await self._maybe_emergency_optimize(agent, position.symbol)
-            except Exception as exc:
-                logger.debug("emergency optimize skipped for {}: {}", agent.id, exc)
+            loss_streak = 0
+            streak_trades = await Trade.find(
+                Trade.agent_id == agent.id, Trade.status == "filled", Trade.closed_at != None,
+            ).sort(-Trade.closed_at).limit(5).to_list()
+            for t in streak_trades:
+                if float(t.pnl or 0) < 0:
+                    loss_streak += 1
+                else:
+                    break
 
-    async def _maybe_emergency_optimize(self, agent: Agent, symbol: str) -> None:
-        """Trigger immediate re-optimization if the agent has 3+ consecutive losses.
+            if loss_streak >= 3 and not agent.recovery_mode:
+                # Always enable recovery mode so the agent is unblocked
+                agent.recovery_mode = True
+                await agent.save()
+                logger.warning(
+                    "agent {} hit {} consecutive losses — recovery mode ON",
+                    agent.id, loss_streak,
+                )
+                # Try to re-optimize (best-effort — agent trades again regardless)
+                try:
+                    await self._emergency_optimize(agent, position.symbol, loss_streak)
+                except Exception as exc:
+                    logger.warning("emergency optimize failed for {}: {} — agent will resume with current params", agent.id, exc)
 
-        Recovery flow:
-        1. Count consecutive losses
-        2. Study what other profitable agents are doing (fleet warm starts)
-        3. Re-optimize with Bayesian search seeded from fleet winners
-        4. Tighten risk params (lower stop loss, higher confidence threshold)
-        5. Enable recovery_mode → risk engine allows one half-size trade
-        6. Once the recovery trade succeeds, recovery_mode clears
+    async def _emergency_optimize(self, agent: Agent, symbol: str, loss_streak: int) -> None:
+        """Re-optimize after consecutive losses. Agent is already in recovery_mode.
+
+        Studies fleet winners, re-optimizes with Bayesian search, and tightens params.
         """
-        loss_streak = 0
-        recent = await Trade.find(
-            Trade.agent_id == agent.id, Trade.status == "filled", Trade.closed_at != None,
-        ).sort(-Trade.closed_at).limit(5).to_list()
-        for t in recent:
-            if float(t.pnl or 0) < 0:
-                loss_streak += 1
-            else:
-                break
-
-        if loss_streak < 3:
-            return
-
         strategy_type = agent.strategy.type if agent.strategy else None
         if not strategy_type or not agent.api_key_id:
             return
 
         logger.warning(
-            "agent {} hit {} consecutive losses — studying fleet winners and re-optimizing",
+            "agent {} — studying fleet winners and re-optimizing after {} losses",
             agent.id, loss_streak,
         )
 
@@ -547,7 +547,6 @@ class TradingEngine:
             new_params["position_size_pct"] = min(new_params["position_size_pct"], 1.5)
 
         agent.strategy_params = new_params
-        agent.recovery_mode = True
         agent.optimization_params = {
             "score": result.best_score,
             "trigger": "emergency_loss_streak",
