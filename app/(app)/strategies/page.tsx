@@ -41,20 +41,20 @@ function RuleDisplay({ rule }: { rule: Record<string, unknown> }) {
   if (indicator === 'ema_cross') {
     return (
       <span className="text-xs">
-        {label} ({rule.fast || 9}/{rule.slow || 21}) → {String(rule.direction || 'bullish')}
+        {label} ({String(rule.fast ?? 9)}/{String(rule.slow ?? 21)}) → {String(rule.direction ?? 'bullish')}
       </span>
     );
   }
   if (indicator === 'rsi') {
     return (
       <span className="text-xs">
-        {label}({rule.period || 14}) {rule.op} {String(rule.value)}
+        {label}({String(rule.period ?? 14)}) {String(rule.op)} {String(rule.value)}
       </span>
     );
   }
   return (
     <span className="text-xs">
-      {label} {rule.op} {String(rule.value)}
+      {label} {String(rule.op)} {String(rule.value)}
     </span>
   );
 }
