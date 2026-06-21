@@ -90,14 +90,12 @@ class RiskEngine:
                 "position_limit",
             )
 
+        # Consecutive losses no longer hard-block trading. Instead:
+        # - The AI validates every signal and sees the loss history
+        # - Emergency re-optimization tightens params after 3 losses
+        # - Position size is halved during recovery mode
+        # The daily drawdown cap below is the real safety net.
         streak = await cls._consecutive_loss_streak(agent.id)
-        max_streak = min(agent.max_consecutive_losses or 99, settings.MAX_CONSECUTIVE_LOSSES)
-        if streak >= max_streak and not agent.recovery_mode:
-            return RiskDecision(
-                False,
-                f"consecutive losses ({streak}) reached limit ({max_streak})",
-                "consecutive_losses",
-            )
 
         if (agent.assigned_capital or 0) > 0:
             day_pnl = float(agent.current_day_pnl or 0)
