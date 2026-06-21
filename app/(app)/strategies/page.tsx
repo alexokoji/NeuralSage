@@ -69,7 +69,7 @@ interface GeneratedStrategy {
 }
 
 export default function StrategiesPage() {
-  const { data: systemStrategies } = useStrategies();
+  const { data: systemStrategies, loading: strategiesLoading, error: strategiesError } = useStrategies();
   const [showBuilder, setShowBuilder] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [riskLevel, setRiskLevel] = useState<'low' | 'medium' | 'high'>('medium');
@@ -338,9 +338,30 @@ export default function StrategiesPage() {
         </div>
       )}
 
-      {/* System Strategies */}
+      {/* All Strategies */}
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-muted-foreground">System Strategies</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground">
+          Available Strategies {systemStrategies ? `(${systemStrategies.length})` : ''}
+        </h3>
+
+        {strategiesLoading && !systemStrategies && (
+          <div className="flex items-center justify-center py-10 text-muted-foreground text-xs gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading strategies...
+          </div>
+        )}
+
+        {strategiesError && (
+          <div className="px-4 py-3 bg-red-500/5 border border-red-500/15 rounded-xl text-xs text-red-400">
+            Failed to load strategies: {strategiesError.message}
+          </div>
+        )}
+
+        {!strategiesLoading && systemStrategies?.length === 0 && (
+          <div className="text-center py-10 text-xs text-muted-foreground">
+            No strategies found. System strategies should be seeded automatically on backend restart.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {(systemStrategies ?? []).map(strat => {
             const info = systemStrategyInfo[strat.type] || {

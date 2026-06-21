@@ -74,7 +74,7 @@ export function usePolling<T>(loader: () => Promise<T>, intervalMs: number, deps
 
 // All data hooks now auto-poll so pages stay live without manual reload.
 export const useApiKeys = () => usePolling<ApiKey[]>(() => api.listApiKeys(), 15_000);
-export const useStrategies = () => useAsync<Strategy[]>(() => api.listStrategies(), []);
+export const useStrategies = () => usePolling<Strategy[]>(() => api.listStrategies(), 30_000);
 export const useAgents = () => usePolling<Agent[]>(() => api.listAgents(), 5_000);
 export const useTrades = (limit = 50) => usePolling<Trade[]>(() => api.listTrades(limit), 8_000);
 export const usePositions = () => usePolling<Position[]>(() => api.listPositions(), 8_000);
