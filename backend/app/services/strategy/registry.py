@@ -18,6 +18,8 @@ STRATEGIES: dict[str, Strategy] = {
 
 
 def get_strategy(strategy_type: str) -> Strategy:
-    if strategy_type not in STRATEGIES:
-        raise KeyError(f"unknown strategy: {strategy_type}")
-    return STRATEGIES[strategy_type]
+    if strategy_type in STRATEGIES:
+        return STRATEGIES[strategy_type]
+    if strategy_type.startswith("composite_"):
+        return STRATEGIES["composite"]
+    raise KeyError(f"unknown strategy: {strategy_type}")

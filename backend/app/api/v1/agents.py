@@ -26,6 +26,41 @@ async def list_strategies(user: User = Depends(get_current_user)):
     return await Strategy.find_all().sort(+Strategy.name).to_list()
 
 
+@router.post("/strategies", response_model=StrategyPublic, status_code=status.HTTP_201_CREATED)
+async def create_strategy(
+    body: dict,
+    user: User = Depends(get_current_user),
+):
+    """Save a custom (AI-generated) strategy so it appears in the agent creation dropdown."""
+    name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    rules = body.get("rules", {})
+    params = body.get("params", {})
+
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "name is required")
+
+    type_slug = "composite_" + name.lower().replace(" ", "_").replace("-", "_")[:30]
+
+    existing = await Strategy.find_one(Strategy.type == type_slug)
+    if existing:
+        existing.name = name
+        existing.description = description
+        existing.default_params = {**params, "rules": rules}
+        await existing.save()
+        return existing
+
+    strat = Strategy(
+        name=name,
+        type=type_slug,
+        description=description,
+        default_params={**params, "rules": rules},
+        is_system=False,
+    )
+    await strat.insert()
+    return strat
+
+
 @router.get("", response_model=list[AgentPublic])
 async def list_agents(user: User = Depends(get_current_user)):
     return await Agent.find(Agent.user_id == user.id).sort(-Agent.created_at).to_list()

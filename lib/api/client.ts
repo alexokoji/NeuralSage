@@ -140,6 +140,8 @@ export const api = {
 
   // ----- agents -----
   listStrategies: () => request<Strategy[]>('GET', '/api/v1/agents/strategies'),
+  saveStrategy: (body: { name: string; description: string; rules: Record<string, unknown>; params: Record<string, number> }) =>
+    request<Strategy>('POST', '/api/v1/agents/strategies', body),
   listAgents: () => request<Agent[]>('GET', '/api/v1/agents'),
   createAgent: (body: AgentCreate) => request<Agent>('POST', '/api/v1/agents', body),
   getAgent: (id: string) => request<Agent>('GET', `/api/v1/agents/${id}`),

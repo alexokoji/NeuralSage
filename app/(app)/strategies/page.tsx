@@ -77,6 +77,8 @@ export default function StrategiesPage() {
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState<GeneratedStrategy | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [expandedSystem, setExpandedSystem] = useState<string | null>(null);
 
   const generate = async () => {
@@ -101,6 +103,25 @@ export default function StrategiesPage() {
       }, null, 2));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const saveStrategy = async () => {
+    if (!generated?.name || !generated?.rules || saving) return;
+    setSaving(true);
+    try {
+      await api.saveStrategy({
+        name: generated.name,
+        description: generated.description || '',
+        rules: generated.rules,
+        params: generated.params || {},
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -288,9 +309,24 @@ export default function StrategiesPage() {
                 </p>
               )}
 
-              <p className="text-[10px] text-muted-foreground">
-                To use this strategy: create a new agent → choose &quot;Composite&quot; strategy → paste the copied rules into strategy params.
-              </p>
+              <button
+                onClick={saveStrategy}
+                disabled={saving || saved}
+                className={cn(
+                  'w-full flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-medium transition-all',
+                  saved
+                    ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+                    : 'bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40',
+                )}
+              >
+                {saved ? (
+                  <><Check className="w-4 h-4" /> Saved — available in agent creation dropdown</>
+                ) : saving ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
+                ) : (
+                  <><Plus className="w-4 h-4" /> Save Strategy</>
+                )}
+              </button>
             </div>
           )}
 
