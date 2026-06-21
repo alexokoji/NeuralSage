@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_AUTH: str = "10/minute"
 
     # Groq Cloud — AI brain (free tier at https://console.groq.com)
+    # Add multiple keys comma-separated for load balancing: "gsk_key1,gsk_key2"
     GROQ_API_KEY: str = ""
+    GROQ_API_KEY_2: str = ""
 
     # Exchanges
     BYBIT_REST_URL: str = "https://api.bybit.com"

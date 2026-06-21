@@ -51,13 +51,17 @@ class StatusResponse(BaseModel):
     model: str
 
 
-@router.get("/status", response_model=StatusResponse)
-async def ai_status(_: User = Depends(get_current_user)) -> StatusResponse:
-    key = getattr(settings, "GROQ_API_KEY", "") or ""
-    return StatusResponse(
-        grok_available=bool(key),
-        model="llama-3.3-70b-versatile (chat) / llama-3.1-8b-instant (analysis)",
-    )
+@router.get("/status")
+async def ai_status(_: User = Depends(get_current_user)):
+    from app.services.grok_client import pool_status
+    keys = pool_status()
+    return {
+        "grok_available": len(keys) > 0,
+        "model": "llama-3.3-70b-versatile (chat) / llama-3.1-8b-instant (analysis)",
+        "keys": keys,
+        "total_keys": len(keys),
+        "keys_available": sum(1 for k in keys if k["available"]),
+    }
 
 
 _MARKET_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
