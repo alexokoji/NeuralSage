@@ -24,6 +24,7 @@ const navItems = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/portfolio', icon: Wallet, label: 'Portfolio' },
   { href: '/agents', icon: Bot, label: 'AI Agents' },
+  { href: '/strategies', icon: Activity, label: 'Strategies' },
   { href: '/trades', icon: History, label: 'Trade History' },
   { href: '/settings', icon: Settings, label: 'Settings' },
 ];

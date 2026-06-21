@@ -183,6 +183,15 @@ export const api = {
       `/api/v1/ai/fleet-insight${qs}`,
     );
   },
+  generateStrategy: (description: string, riskLevel: string, timeframe: string) =>
+    request<{
+      name?: string;
+      description?: string;
+      rules?: Record<string, unknown[]>;
+      params?: Record<string, number>;
+      explanation?: string;
+      error?: string;
+    }>('POST', '/api/v1/ai/generate-strategy', { description, risk_level: riskLevel, timeframe }),
   agentSuggestions: (agentId: string) =>
     request<{
       agent_id: string;

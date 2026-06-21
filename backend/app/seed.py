@@ -60,6 +60,18 @@ SYSTEM_STRATEGIES = [
             "min_confidence": 0.5,
         },
     },
+    {
+        "name": "Composite (Custom)",
+        "type": "composite",
+        "description": "Custom strategy built from AI-generated indicator rules. Use the Strategy Builder to create one.",
+        "default_params": {
+            "rules": {},
+            "stop_loss_pct": 1.0,
+            "take_profit_pct": 2.5,
+            "min_confidence": 0.6,
+            "position_size_pct": 2.0,
+        },
+    },
 ]
 
 

@@ -167,6 +167,91 @@ async def agent_suggestions(
     return {"agent_id": agent_id, **result}
 
 
+@router.post("/generate-strategy")
+async def generate_strategy(
+    body: dict[str, Any],
+    _: User = Depends(get_current_user),
+):
+    """Ask AI to generate a custom composite strategy based on user's description.
+
+    Body: { "description": "I want a strategy that...", "risk_level": "low|medium|high", "timeframe": "5m" }
+    Returns: { "name": "...", "rules": {...}, "params": {...}, "explanation": "..." }
+    """
+    from app.services.grok_client import GrokClient, GrokError, GrokUnavailableError
+    import json
+
+    description = body.get("description", "")
+    risk_level = body.get("risk_level", "medium")
+    timeframe = body.get("timeframe", "15m")
+
+    if not description:
+        from fastapi import HTTPException
+        raise HTTPException(400, "description is required")
+
+    try:
+        client = GrokClient()
+    except GrokUnavailableError:
+        return {"error": "AI not configured — add GROQ_API_KEY"}
+
+    prompt = f"""Create a trading strategy based on this description:
+"{description}"
+
+Risk level: {risk_level}
+Timeframe: {timeframe}
+
+You must output ONLY a JSON object with this exact structure:
+{{
+  "name": "<short strategy name, 2-4 words>",
+  "description": "<1-2 sentence description of what this strategy does>",
+  "rules": {{
+    "entry_long": [
+      <list of conditions, each is an object with "indicator", "op", "value", and optional params>
+    ],
+    "entry_short": [
+      <list of conditions>
+    ],
+    "exit_long": [
+      <list of conditions>
+    ],
+    "exit_short": [
+      <list of conditions>
+    ]
+  }},
+  "params": {{
+    "stop_loss_pct": <float based on risk level: low=0.5-0.8, medium=0.8-1.5, high=1.5-3.0>,
+    "take_profit_pct": <float, at least 2x stop_loss for good R:R>,
+    "min_confidence": <float 0.55-0.75 based on risk level>,
+    "position_size_pct": <float 1.0-3.0 based on risk level>
+  }},
+  "explanation": "<2-3 sentences explaining the logic and when this strategy works best>"
+}}
+
+Available indicators for conditions:
+- "rsi": period (default 14), op: "<" or ">", value: number (30=oversold, 70=overbought)
+- "ema_cross": fast (default 9), slow (default 21), direction: "bullish" or "bearish"
+- "volume": op: ">" with value as multiplier of 20-period average (e.g. 1.5 = 50% above avg)
+- "price_change": op: "<" or ">", value: percent change from previous candle
+- "atr": period (default 14), op: "<" or ">", value: threshold
+
+Rules:
+- Each entry must have 2-4 conditions (AND logic) for filtering quality
+- Capital preservation first — default to tighter stops for low risk
+- For short timeframes (1m-5m): use tighter stops (0.3-0.8%) and smaller targets
+- For longer timeframes (1h-4h): allow wider stops and bigger targets
+- Always include RSI as one of the conditions to avoid entering at extremes
+"""
+    try:
+        result = await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system="You are a quantitative trading strategy designer. Output ONLY valid JSON, no commentary.",
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        return result
+    except GrokError as exc:
+        return {"error": f"AI generation failed: {exc}"}
+
+
 @router.get("/fleet-insight", response_model=FleetInsightResponse)
 async def fleet_insight(
     strategy_type: str = Query(..., description="Strategy type e.g. ema_crossover"),

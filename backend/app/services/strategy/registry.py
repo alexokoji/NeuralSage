@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.services.strategy.base import Strategy
 from app.services.strategy.breakout import BreakoutStrategy
+from app.services.strategy.composite import CompositeStrategy
 from app.services.strategy.ema_crossover import EMACrossoverStrategy
 from app.services.strategy.micro_scalping import MicroScalpingStrategy
 from app.services.strategy.rsi_entry import RSIEntryStrategy
@@ -12,6 +13,7 @@ STRATEGIES: dict[str, Strategy] = {
     RSIEntryStrategy.type: RSIEntryStrategy(),
     BreakoutStrategy.type: BreakoutStrategy(),
     MicroScalpingStrategy.type: MicroScalpingStrategy(),
+    CompositeStrategy.type: CompositeStrategy(),
 }
 
 
