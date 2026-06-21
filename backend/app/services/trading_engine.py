@@ -432,3 +432,96 @@ class TradingEngine:
             message=f"PnL {gross:+.2f} ({reason})",
             data={"agent_id": str(agent.id), "trade_id": str(position.trade_id)},
         )
+
+        # Emergency re-optimization: if the agent just hit 3 consecutive losses,
+        # trigger an immediate parameter re-tune instead of waiting for the
+        # scheduled sweep. This stops bleeding faster.
+        if gross < 0:
+            try:
+                await self._maybe_emergency_optimize(agent, position.symbol)
+            except Exception as exc:
+                logger.debug("emergency optimize skipped for {}: {}", agent.id, exc)
+
+    async def _maybe_emergency_optimize(self, agent: Agent, symbol: str) -> None:
+        """Trigger immediate re-optimization if the agent has 3+ consecutive losses."""
+        loss_streak = 0
+        recent = await Trade.find(
+            Trade.agent_id == agent.id, Trade.status == "filled", Trade.closed_at != None,
+        ).sort(-Trade.closed_at).limit(5).to_list()
+        for t in recent:
+            if float(t.pnl or 0) < 0:
+                loss_streak += 1
+            else:
+                break
+
+        if loss_streak < 3:
+            return
+
+        strategy_type = agent.strategy.type if agent.strategy else None
+        if not strategy_type or not agent.api_key_id:
+            return
+
+        logger.warning(
+            "agent {} hit {} consecutive losses — triggering emergency re-optimization",
+            agent.id, loss_streak,
+        )
+
+        from app.models.api_key import ApiKey
+        from app.services.exchange import build_client
+        from app.services.strategy import get_strategy
+        from app.services.strategy.indicators import candles_to_df
+        from app.services.ai_optimizer import optimize_strategy_async
+        from app.services.learning import LearningService
+
+        api_key = await ApiKey.get(agent.api_key_id)
+        if not api_key:
+            return
+
+        strat = get_strategy(strategy_type)
+        client = build_client(api_key)
+        try:
+            candles = await client.get_candles(symbol, agent.timeframe, limit=400)
+        finally:
+            await client.close()
+
+        if len(candles) < 100:
+            return
+
+        df = candles_to_df(candles)
+
+        warm_starts = await LearningService.warm_starts(
+            strategy_type=strategy_type,
+            symbol=symbol,
+            timeframe=agent.timeframe,
+        )
+
+        base = {**(strat.default_params or {}), **(agent.strategy_params or {})}
+        result = await optimize_strategy_async(
+            strat, df, base,
+            symbol=symbol,
+            timeframe=agent.timeframe,
+            warm_starts=warm_starts,
+            n_calls=15,
+        )
+
+        agent.strategy_params = result.best_params
+        agent.optimization_params = {
+            "score": result.best_score,
+            "trigger": "emergency_loss_streak",
+            "loss_streak": loss_streak,
+            "iterations": result.iterations,
+        }
+        await agent.save()
+
+        logger.info(
+            "agent {} emergency re-optimized: score={:.4f} params={}",
+            agent.id, result.best_score, result.best_params,
+        )
+
+        await NotificationService.create(
+            user_id=agent.user_id,
+            type="agent_optimized",
+            title=f"{agent.name} auto-adjusted after {loss_streak} losses",
+            message=f"Strategy params re-optimized (score: {result.best_score:.3f})",
+            data={"agent_id": str(agent.id), "trigger": "loss_streak"},
+        )

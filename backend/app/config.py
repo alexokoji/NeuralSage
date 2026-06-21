@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_TRADES: int = 5
     MAX_CONSECUTIVE_LOSSES: int = 3
     TRADE_LOOP_INTERVAL_SECONDS: int = 15
-    OPTIMIZATION_INTERVAL_HOURS: int = 6
+    OPTIMIZATION_INTERVAL_HOURS: int = 2
 
     @model_validator(mode="after")
     def _defaults(self) -> "Settings":
