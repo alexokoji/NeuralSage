@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 AgentStatus = Literal["idle", "active", "paused", "stopped", "error"]
-StrategyType = Literal["ema_crossover", "rsi_entry", "breakout", "micro_scalping"]
+StrategyType = str  # was Literal; now accepts composite + custom strategies
 Timeframe = Literal["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
 

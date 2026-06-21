@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
 from app.models.agent import Agent, StrategyEmbed
@@ -26,16 +27,23 @@ async def list_strategies(user: User = Depends(get_current_user)):
     return await Strategy.find_all().sort(+Strategy.name).to_list()
 
 
+class StrategyCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    rules: dict = Field(default_factory=dict)
+    params: dict = Field(default_factory=dict)
+
+
 @router.post("/strategies", response_model=StrategyPublic, status_code=status.HTTP_201_CREATED)
 async def create_strategy(
-    body: dict,
+    body: StrategyCreateBody,
     user: User = Depends(get_current_user),
 ):
     """Save a custom (AI-generated) strategy so it appears in the agent creation dropdown."""
-    name = body.get("name", "").strip()
-    description = body.get("description", "").strip()
-    rules = body.get("rules", {})
-    params = body.get("params", {})
+    name = body.name.strip()
+    description = body.description.strip()
+    rules = body.rules
+    params = body.params
 
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "name is required")
