@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { formatDateWAT } from '@/lib/utils/timezone';
 import {
   AreaChart,
   Area,
@@ -262,6 +263,38 @@ export default function DashboardPage() {
                 : 60
             }
             status={activeAgents ? 'active' : 'idle'}
+            winRate={
+              agents && agents.length
+                ? Math.round(
+                    agents.reduce((a, b) => a + (Number(b.total_trades) > 0 ? Number(b.winning_trades) / Number(b.total_trades) * 100 : 0), 0) / agents.length,
+                  )
+                : 0
+            }
+            totalTrades={agents?.reduce((a, b) => a + Number(b.total_trades), 0) ?? 0}
+            signalCount={agents?.filter(a => a.last_signal && a.last_signal !== 'hold').length ?? 0}
+            portfolioContext={{
+              total_balance_usd: totalBalance,
+              total_pnl: totalPnl,
+              total_pnl_pct: totalPnlPct,
+              daily_pnl: dailyPnl,
+              daily_pnl_pct: dailyPnlPct,
+              active_agents_count: activeAgents,
+              open_positions_count: openPositions,
+            }}
+            activeAgents={agents?.filter(a => a.status === 'active').map(a => ({
+              name: a.name,
+              status: a.status,
+              strategy: a.strategy?.type,
+              trading_pairs: a.trading_pairs,
+              assigned_capital: a.assigned_capital,
+              total_pnl: a.total_pnl,
+              total_trades: a.total_trades,
+              winning_trades: a.winning_trades,
+              confidence_score: a.confidence_score,
+              last_signal: a.last_signal,
+              last_signal_symbol: a.last_signal_symbol,
+              is_paper_trade: a.is_paper_trade,
+            }))}
           />
         </div>
       </div>
@@ -429,7 +462,7 @@ export default function DashboardPage() {
                     </span>
                   </td>
                   <td className="py-2.5 text-muted-foreground">
-                    {new Date(trade.opened_at).toLocaleDateString()}
+                    {formatDateWAT(trade.opened_at)}
                   </td>
                 </tr>
               ))}

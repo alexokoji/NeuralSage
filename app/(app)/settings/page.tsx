@@ -324,7 +324,7 @@ export default function SettingsPage() {
                   <div>
                     <p className="text-muted-foreground">Added</p>
                     <p className="mt-0.5">
-                      {new Date(key.created_at).toLocaleDateString()}
+                      {new Date(key.created_at).toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' })}
                     </p>
                   </div>
                 </div>

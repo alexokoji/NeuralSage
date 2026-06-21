@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { formatDateTimeWAT } from '@/lib/utils/timezone';
 import {
   Search,
   Download,
@@ -242,22 +243,10 @@ export default function TradesPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
-                    {new Date(trade.opened_at).toLocaleString([], {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                    {formatDateTimeWAT(trade.opened_at)}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
-                    {trade.closed_at
-                      ? new Date(trade.closed_at).toLocaleString([], {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : '—'}
+                    {trade.closed_at ? formatDateTimeWAT(trade.closed_at) : '—'}
                   </td>
                 </tr>
               ))}

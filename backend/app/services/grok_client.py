@@ -26,10 +26,13 @@ from loguru import logger
 
 from app.config import settings
 
-# Process-level 429 back-off state. When Groq rate-limits us we stop calling
-# for _RATE_LIMIT_BACKOFF_SECONDS so we don't hammer the endpoint every tick.
+# Groq free tier: 30 requests/min, 14,400/day.
+# Proactive throttle: space requests ~2.5s apart (24 req/min, safely under limit).
+# If we still get a 429, back off for 30s (not 60s — faster recovery).
 _rate_limited_until: float = 0.0
-_RATE_LIMIT_BACKOFF_SECONDS = 60.0
+_RATE_LIMIT_BACKOFF_SECONDS = 30.0
+_last_request_at: float = 0.0
+_MIN_REQUEST_INTERVAL = 2.5
 
 # Groq Cloud — OpenAI-compatible endpoint
 _BASE_URL = "https://api.groq.com/openai/v1"
@@ -140,7 +143,8 @@ class GrokClient:
         return payload
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        global _rate_limited_until
+        global _rate_limited_until, _last_request_at
+        import asyncio
 
         # Honour the back-off window set by a previous 429 response.
         remaining = _rate_limited_until - time.monotonic()
@@ -148,6 +152,13 @@ class GrokClient:
             raise GrokError(
                 f"xAI rate limit — backing off for {remaining:.0f}s more"
             )
+
+        # Proactive throttle: space requests apart to avoid hitting 30/min limit.
+        wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+        _last_request_at = time.monotonic()
 
         url = _BASE_URL + path
         try:
