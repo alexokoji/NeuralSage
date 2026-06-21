@@ -61,6 +61,40 @@ class LearningService:
         await obs.save()
 
     @staticmethod
+    async def record_trade_outcome(
+        *,
+        agent_id: uuid.UUID,
+        strategy_type: str,
+        symbol: str,
+        timeframe: str,
+        pnl: float,
+    ) -> None:
+        """Update the most recent observation for this agent's strategy with real trade PnL.
+
+        Called when a position closes — this is the critical feedback loop that
+        lets agents learn from actual outcomes, not just backtests.
+        """
+        obs = await StrategyObservation.find(
+            StrategyObservation.source_agent_id == agent_id,
+            StrategyObservation.strategy_type == strategy_type,
+        ).sort(-StrategyObservation.created_at).first_or_none()
+
+        if obs is None:
+            obs = await StrategyObservation.find(
+                StrategyObservation.strategy_type == strategy_type,
+                StrategyObservation.symbol == symbol,
+                StrategyObservation.timeframe == timeframe,
+            ).sort(-StrategyObservation.created_at).first_or_none()
+
+        if obs is None:
+            return
+
+        obs.realized_pnl = float(obs.realized_pnl or 0) + pnl
+        obs.realized_trades = int(obs.realized_trades or 0) + 1
+        obs.updated_at = datetime.now(timezone.utc)
+        await obs.save()
+
+    @staticmethod
     async def warm_starts(
         *,
         strategy_type: str,

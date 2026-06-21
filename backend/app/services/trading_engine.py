@@ -409,6 +409,22 @@ class TradingEngine:
             agent.winning_trades = (agent.winning_trades or 0) + 1
         await agent.save()
 
+        # Feed the outcome back into the fleet learning system so other agents
+        # can learn from this trade's success or failure.
+        try:
+            from app.services.learning import LearningService
+            strategy_type = agent.strategy.type if agent.strategy else None
+            if strategy_type:
+                await LearningService.record_trade_outcome(
+                    agent_id=agent.id,
+                    strategy_type=strategy_type,
+                    symbol=position.symbol,
+                    timeframe=agent.timeframe,
+                    pnl=gross,
+                )
+        except Exception:
+            pass
+
         await NotificationService.create(
             user_id=agent.user_id,
             type="trade_closed",
