@@ -52,6 +52,7 @@ class TradingEngine:
             agent.cooldown_until = None
             agent.session_trade_count = 0
             agent.last_error = None
+            await agent.save()
             # Study fleet data and adopt winning params if available
             try:
                 await self._study_fleet_and_adapt(agent)

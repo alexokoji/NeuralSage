@@ -168,6 +168,9 @@ async def control_agent(
         agent.status = "active"
         agent.started_at = datetime.now(timezone.utc)
         agent.recovery_mode = True
+        agent.cooldown_until = None
+        agent.session_trade_count = 0
+        agent.last_error = None
     elif body.action == "pause":
         agent.status = "paused"
     else:
