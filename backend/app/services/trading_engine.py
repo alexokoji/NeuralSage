@@ -38,14 +38,50 @@ class TradingEngine:
         if agent.status != "active":
             return {"skipped": True, "reason": f"agent {agent.status}"}
 
+        # --- Session cooldown: after N trades, pause to study fleet data ---
+        now = datetime.now(timezone.utc)
+        if agent.cooldown_until and now < agent.cooldown_until:
+            remaining = (agent.cooldown_until - now).total_seconds() / 60
+            agent.last_error = f"cooldown: studying fleet data ({remaining:.0f}m remaining)"
+            agent.last_tick_at = now
+            await agent.save()
+            return {"skipped": True, "reason": f"cooldown ({remaining:.0f}m left)"}
+
+        # Cooldown just ended — reset session and study fleet winners
+        if agent.cooldown_until and now >= agent.cooldown_until:
+            agent.cooldown_until = None
+            agent.session_trade_count = 0
+            agent.last_error = None
+            # Study fleet data and adopt winning params if available
+            try:
+                await self._study_fleet_and_adapt(agent)
+            except Exception:
+                pass
+            logger.info("agent {} cooldown ended — session reset, fleet data studied", agent.id)
+
         strategy_type = agent.strategy.type if agent.strategy else None
         if not strategy_type:
             return {"skipped": True, "reason": "agent has no strategy"}
 
         strategy = get_strategy(strategy_type)
 
+        # --- Profit protection: check if we've reached the target ---
+        capital = float(agent.assigned_capital or 0)
+        if capital > 0:
+            pnl_pct = (float(agent.total_pnl or 0) / capital) * 100
+            protect_threshold = float(agent.profit_protect_pct or 15)
+            if pnl_pct >= protect_threshold and not agent.protect_mode:
+                agent.protect_mode = True
+                logger.info(
+                    "agent {} entered protect mode: PnL {:.1f}% >= {:.1f}% target",
+                    agent.id, pnl_pct, protect_threshold,
+                )
+            elif pnl_pct < protect_threshold * 0.5 and agent.protect_mode:
+                # Exit protect mode if profit drops below half the threshold
+                agent.protect_mode = False
+
         # Record that a tick ran even if it errors out below.
-        agent.last_tick_at = datetime.now(timezone.utc)
+        agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
 
         try:
@@ -154,12 +190,15 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
-            # Reject low-confidence entries — capital preservation first.
-            if signal.confidence < 0.55:
-                agent.last_error = f"signal rejected: confidence {signal.confidence:.2f} < 0.55 threshold"
+            # In protect mode, only accept very high confidence trades
+            min_conf = 0.80 if agent.protect_mode else 0.55
+            if signal.confidence < min_conf:
+                mode_label = "protect mode" if agent.protect_mode else "standard"
+                agent.last_error = f"signal rejected ({mode_label}): confidence {signal.confidence:.2f} < {min_conf}"
                 logger.debug(
-                    "agent {} {}: entry rejected (confidence {:.2f} too low)",
-                    agent.id, symbol, signal.confidence,
+                    "agent {} {}: entry rejected (confidence {:.2f} < {:.2f}, {})",
+                    agent.id, symbol, signal.confidence, min_conf,
+                    "PROTECT" if agent.protect_mode else "normal",
                 )
                 return
 
@@ -338,6 +377,26 @@ class TradingEngine:
         if agent.recovery_mode:
             agent.recovery_mode = False
             logger.info("agent {} recovery trade opened — recovery mode cleared", agent.id)
+
+        # Session trade counter — triggers cooldown after N trades
+        agent.session_trade_count = (agent.session_trade_count or 0) + 1
+        max_session = agent.trades_per_session or 10
+        if agent.session_trade_count >= max_session:
+            hours = agent.cooldown_hours or 3.0
+            from datetime import timedelta
+            agent.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=hours)
+            logger.info(
+                "agent {} completed session ({} trades) — cooling down for {:.1f}h to study fleet data",
+                agent.id, agent.session_trade_count, hours,
+            )
+            await NotificationService.create(
+                user_id=agent.user_id,
+                type="agent_status",
+                title=f"{agent.name} pausing to study ({agent.session_trade_count} trades done)",
+                message=f"Cooling down for {hours:.0f}h to analyse fleet data before next session.",
+                data={"agent_id": str(agent.id), "trigger": "session_cooldown"},
+            )
+
         await agent.save()
 
         await NotificationService.create(
@@ -571,3 +630,42 @@ class TradingEngine:
             ),
             data={"agent_id": str(agent.id), "trigger": "loss_streak", "recovery": True},
         )
+
+    async def _study_fleet_and_adapt(self, agent: Agent) -> None:
+        """Called when a session cooldown ends. Study what other agents learned
+        and adopt better params if available."""
+        strategy_type = agent.strategy.type if agent.strategy else None
+        if not strategy_type:
+            return
+
+        from app.services.learning import LearningService
+
+        best = await LearningService.fleet_best(
+            strategy_type=strategy_type, limit=5,
+        )
+
+        # Find the observation with the best realized PnL (not just backtest)
+        winner = None
+        for obs in best:
+            if float(obs.realized_pnl or 0) > 0 and int(obs.realized_trades or 0) >= 3:
+                winner = obs
+                break
+
+        if winner:
+            old_params = dict(agent.strategy_params or {})
+            new_params = {**old_params, **winner.params}
+            agent.strategy_params = new_params
+            await agent.save()
+            logger.info(
+                "agent {} adopted fleet winner params after cooldown study (realized_pnl={:.2f}): {}",
+                agent.id, winner.realized_pnl, winner.params,
+            )
+            await NotificationService.create(
+                user_id=agent.user_id,
+                type="agent_optimized",
+                title=f"{agent.name} learned from fleet data",
+                message=f"Adopted winning params from fleet (realized PnL: ${winner.realized_pnl:.2f}). Resuming trading.",
+                data={"agent_id": str(agent.id), "trigger": "cooldown_study"},
+            )
+        else:
+            logger.info("agent {} cooldown study: no fleet winner found, keeping current params", agent.id)

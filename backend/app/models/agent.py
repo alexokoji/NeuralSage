@@ -60,10 +60,21 @@ class Agent(Document):
     # When True, orders are simulated locally — no exchange API calls for entry/exit.
     is_paper_trade: bool = False
 
-    # Recovery mode: set after emergency re-optimization. The risk engine allows
-    # one carefully-sized trade to break the consecutive loss streak. Cleared
-    # once a trade opens successfully.
+    # Recovery mode: set after emergency re-optimization. The risk engine
+    # halves position size until a winning trade proves the new params work.
     recovery_mode: bool = False
+
+    # 10-trade session cooldown: after placing this many trades, the agent
+    # pauses for cooldown_hours to study fleet data before resuming.
+    trades_per_session: int = 10
+    cooldown_hours: float = 3.0
+    session_trade_count: int = 0
+    cooldown_until: Optional[datetime] = None
+
+    # Profit protection: when total_pnl reaches this % of assigned_capital,
+    # the agent switches to ultra-conservative mode (only very high confidence entries).
+    profit_protect_pct: float = 15.0
+    protect_mode: bool = False
 
     # Activity tracking — updated every scheduler tick so the UI can show live state
     last_tick_at: Optional[datetime] = None

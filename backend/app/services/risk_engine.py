@@ -117,14 +117,18 @@ class RiskEngine:
         if qty <= 0:
             return RiskDecision(False, "position sized to zero", "max_risk_per_trade")
 
-        # In recovery mode: halve position size to limit exposure while the
-        # agent proves its new params work.
+        # Reduce position size in special modes
+        mode_label = "ok"
         if agent.recovery_mode:
             qty *= 0.5
             risk_dollars *= 0.5
+            mode_label = "recovery — half size"
+        elif getattr(agent, "protect_mode", False):
+            qty *= 0.4
+            risk_dollars *= 0.4
+            mode_label = "protect mode — 40% size"
 
-        reason = "ok (recovery — half size)" if agent.recovery_mode else "ok"
-        return RiskDecision(True, reason, "ok", sized_quantity=qty, risk_amount=risk_dollars)
+        return RiskDecision(True, mode_label, "ok", sized_quantity=qty, risk_amount=risk_dollars)
 
     @staticmethod
     async def _open_position_count(agent_id) -> int:
