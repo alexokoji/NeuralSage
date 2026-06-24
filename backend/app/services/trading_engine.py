@@ -238,6 +238,36 @@ class TradingEngine:
         df = candles_to_df(raw)
 
         open_position = await self._open_position(agent.id, symbol)
+        last_price = float(df["close"].iloc[-1])
+
+        # --- Auto TP/SL: check if price hit stop loss or take profit ---
+        # The exchange handles this for live trades, but paper trades need
+        # the engine to check manually every tick.
+        if open_position is not None:
+            open_position.current_price = last_price
+            sl = float(open_position.stop_loss or 0)
+            tp = float(open_position.take_profit or 0)
+
+            if open_position.side == "long":
+                hit_sl = sl > 0 and last_price <= sl
+                hit_tp = tp > 0 and last_price >= tp
+            else:
+                hit_sl = sl > 0 and last_price >= sl
+                hit_tp = tp > 0 and last_price <= tp
+
+            if hit_tp:
+                close_price = tp
+                await self._close_position(agent, api_key, client, open_position, close_price, "take profit hit")
+                agent.last_signal = "exit"
+                agent.last_signal_symbol = f"{symbol} TP"
+                return
+            if hit_sl:
+                close_price = sl
+                await self._close_position(agent, api_key, client, open_position, close_price, "stop loss hit")
+                agent.last_signal = "exit"
+                agent.last_signal_symbol = f"{symbol} SL"
+                return
+
         ctx = StrategyContext(
             symbol=symbol,
             timeframe=agent.timeframe,
@@ -282,7 +312,6 @@ class TradingEngine:
         agent.last_signal_symbol = symbol
         agent.last_error = None
 
-        last_price = float(df["close"].iloc[-1])
         logger.debug(
             "agent {} {} signal={} price={:.4f} confidence={:.2f}",
             agent.id, symbol, signal.action, last_price, signal.confidence,
