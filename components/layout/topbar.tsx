@@ -26,7 +26,7 @@ export function Topbar({ onMobileMenuClick }: TopbarProps) {
   const { data: tickers } = usePolling(() => api.tickers(), 15000);
 
   return (
-    <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm flex items-center justify-between gap-3 px-4 md:px-6 shrink-0">
+    <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm flex items-center justify-between gap-3 px-4 md:px-6 shrink-0 relative z-50">
       <div className="flex items-center gap-2 min-w-0">
         <button
           onClick={onMobileMenuClick}
