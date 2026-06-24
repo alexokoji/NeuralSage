@@ -79,12 +79,13 @@ function buildPortfolioSeries(
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
-    buckets.push({ date: `${d.getMonth() + 1}/${d.getDate()}`.padStart(5, '0'), pnl: 0 });
+    const parts = d.toLocaleDateString('en-NG', { month: 'numeric', day: 'numeric', timeZone: 'Africa/Lagos' });
+    buckets.push({ date: parts, pnl: 0 });
   }
   for (const t of trades) {
     if (!t.closed_at) continue;
     const d = new Date(t.closed_at);
-    const stamp = `${d.getMonth() + 1}/${d.getDate()}`.padStart(5, '0');
+    const stamp = d.toLocaleDateString('en-NG', { month: 'numeric', day: 'numeric', timeZone: 'Africa/Lagos' });
     const bucket = buckets.find(b => b.date === stamp);
     if (bucket) bucket.pnl += Number(t.pnl);
   }

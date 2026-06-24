@@ -77,13 +77,13 @@ export default function PortfolioPage() {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(today.getDate() - i);
-      const key = d.toLocaleDateString([], { weekday: 'short' });
+      const key = d.toLocaleDateString('en-NG', { weekday: 'short', timeZone: 'Africa/Lagos' });
       labels.push(key);
       buckets[key] = 0;
     }
     for (const t of trades ?? []) {
       if (!t.closed_at) continue;
-      const key = new Date(t.closed_at).toLocaleDateString([], { weekday: 'short' });
+      const key = new Date(t.closed_at).toLocaleDateString('en-NG', { weekday: 'short', timeZone: 'Africa/Lagos' });
       if (buckets[key] !== undefined) buckets[key] += Number(t.pnl);
     }
     return labels.map(date => ({ date, pnl: Math.round(buckets[date] * 100) / 100 }));
