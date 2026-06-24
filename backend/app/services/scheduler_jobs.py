@@ -265,6 +265,11 @@ async def run_daily_rollover() -> dict:
         ).insert()
 
         agent.current_day_pnl = 0
+        # Reset daily protect mode so agent trades fresh tomorrow
+        if agent.protect_mode:
+            agent.protect_mode = False
+            agent.winding_down = False
+            logger.info("daily rollover: {} protect mode reset for new day", agent.name)
         await agent.save()
         snapshots += 1
 

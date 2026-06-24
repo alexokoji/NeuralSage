@@ -116,24 +116,27 @@ class TradingEngine:
             logger.warning("agent {}: cannot build client — {}", agent.id, exc)
             return {"skipped": True, "reason": str(exc)}
 
-        # --- Profit protection ---
+        # --- Daily profit protection ---
+        # If the agent has made >= X% of capital TODAY, enter protect mode
+        # for the rest of the day. Resets at midnight via daily rollover.
         capital = float(agent.assigned_capital or 0)
         if capital > 0:
-            pnl_pct = (float(agent.total_pnl or 0) / capital) * 100
+            day_pnl_pct = (float(agent.current_day_pnl or 0) / capital) * 100
             protect_threshold = float(agent.profit_protect_pct or 15)
-            if pnl_pct >= protect_threshold and not agent.protect_mode:
+            if day_pnl_pct >= protect_threshold and not agent.protect_mode:
                 agent.protect_mode = True
                 agent.winding_down = True
-                logger.info("agent {} entered protect mode: PnL {:.1f}% >= {:.1f}% — winding down open trades", agent.id, pnl_pct, protect_threshold)
+                logger.info(
+                    "agent {} daily profit protection: today's PnL {:.1f}% >= {:.1f}% target — winding down",
+                    agent.id, day_pnl_pct, protect_threshold,
+                )
                 await NotificationService.create(
                     user_id=agent.user_id,
                     type="agent_status",
-                    title=f"{agent.name} protecting profits ({pnl_pct:.1f}%)",
-                    message=f"No new entries. Letting open trades reach TP/SL to finish naturally.",
-                    data={"agent_id": str(agent.id), "trigger": "profit_protect"},
+                    title=f"{agent.name} hit daily target ({day_pnl_pct:.1f}% today)",
+                    message=f"Protecting today's gains. Letting open trades finish. Resets tomorrow.",
+                    data={"agent_id": str(agent.id), "trigger": "daily_profit_protect"},
                 )
-            elif pnl_pct < protect_threshold * 0.5 and agent.protect_mode:
-                agent.protect_mode = False
 
         # --- AI win-rate watchdog: if win rate is poor, force a study break ---
         total_t = agent.total_trades or 0

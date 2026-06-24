@@ -273,7 +273,7 @@ function AgentCard({
       {agent.protect_mode && !agent.winding_down && (
         <div className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg animate-slide-up">
           <Shield className="w-3 h-3 text-emerald-400" />
-          <span className="text-[10px] text-emerald-400 font-medium">Profit protection — only high-confidence trades at 40% size</span>
+          <span className="text-[10px] text-emerald-400 font-medium">Daily target hit — protecting today&apos;s gains. Resets tomorrow.</span>
         </div>
       )}
       {agent.recovery_mode && !agent.winding_down && !agent.protect_mode && (
