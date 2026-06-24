@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     MAX_DAILY_DRAWDOWN_PCT: float = 5.0
     MAX_CONCURRENT_TRADES: int = 5
     MAX_CONSECUTIVE_LOSSES: int = 3
-    TRADE_LOOP_INTERVAL_SECONDS: int = 15
+    TRADE_LOOP_INTERVAL_SECONDS: int = 30
     OPTIMIZATION_INTERVAL_HOURS: int = 1
 
     @model_validator(mode="after")

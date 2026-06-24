@@ -127,15 +127,29 @@ class TradingEngine:
             logger.warning("agent {}: cannot build client — {}", agent.id, exc)
             return {"skipped": True, "reason": str(exc)}
 
+        signals_summary: list[str] = []
         try:
             for symbol in (agent.trading_pairs or []):
                 try:
                     await self._tick_symbol(agent, api_key, strategy, client, symbol)
+                    sig = agent.last_signal or "hold"
+                    if sig != "hold":
+                        signals_summary.append(f"{symbol}:{sig}")
                 except Exception as exc:  # noqa: BLE001
                     agent.last_error = f"{symbol}: {exc}"
                     logger.warning("agent {} {}: tick error — {}", agent.id, symbol, exc)
         finally:
             await client.close()
+
+        # Store a summary of non-hold signals so the UI shows what happened
+        pairs_checked = len(agent.trading_pairs or [])
+        if signals_summary:
+            agent.last_error = None
+            agent.last_signal_symbol = " | ".join(signals_summary[:3])
+        else:
+            agent.last_signal = "hold"
+            agent.last_signal_symbol = f"scanned {pairs_checked} pairs"
+            agent.last_error = None
 
         await agent.save()
         return {"ok": True}
