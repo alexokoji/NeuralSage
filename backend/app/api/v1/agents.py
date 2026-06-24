@@ -167,10 +167,11 @@ async def control_agent(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "assign capital before starting")
         agent.status = "active"
         agent.started_at = datetime.now(timezone.utc)
-        agent.recovery_mode = True
+        agent.recovery_mode = False
         agent.cooldown_until = None
         agent.session_trade_count = 0
         agent.winding_down = False
+        agent.protect_mode = False
         agent.last_error = None
     elif body.action == "pause":
         agent.status = "paused"
