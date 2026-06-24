@@ -188,6 +188,23 @@ async def run_optimization_sweep() -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.exception("optimization failed for agent {}: {}", agent.id, exc)
 
+    # --- Propagate best params to the entire fleet ---
+    try:
+        strategy_types = list({a.strategy.type for a in agents if a.strategy})
+        for stype in strategy_types:
+            best_obs = await LearningService.fleet_best(strategy_type=stype, limit=1)
+            if not best_obs:
+                continue
+            winner = best_obs[0]
+            if float(winner.realized_pnl or 0) <= 0 and int(winner.realized_trades or 0) < 3:
+                continue
+            await LearningService.propagate_to_fleet(
+                strategy_type=stype,
+                winning_params=dict(winner.params),
+            )
+    except Exception as exc:
+        logger.warning("fleet param propagation failed: {}", exc)
+
     logger.info(
         "optimization sweep: tuned={} warm_starts_used_total={}", tuned, seeded_total
     )

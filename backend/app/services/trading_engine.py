@@ -675,9 +675,19 @@ class TradingEngine:
         }
         await agent.save()
 
+        # Propagate winning params to the entire fleet
+        try:
+            await LearningService.propagate_to_fleet(
+                strategy_type=strategy_type,
+                winning_params=new_params,
+                source_agent_id=agent.id,
+            )
+        except Exception:
+            pass
+
         logger.info(
-            "agent {} emergency re-optimized (recovery mode ON): score={:.4f} fleet_winner={} params={}",
-            agent.id, result.best_score, fleet_winner_params is not None, new_params,
+            "agent {} emergency re-optimized + propagated to fleet: score={:.4f} params={}",
+            agent.id, result.best_score, new_params,
         )
 
         await NotificationService.create(
@@ -720,11 +730,20 @@ class TradingEngine:
                 "agent {} adopted fleet winner params after cooldown study (realized_pnl={:.2f}): {}",
                 agent.id, winner.realized_pnl, winner.params,
             )
+            # Share the winning params with all agents using this strategy
+            try:
+                await LearningService.propagate_to_fleet(
+                    strategy_type=strategy_type,
+                    winning_params=new_params,
+                    source_agent_id=agent.id,
+                )
+            except Exception:
+                pass
             await NotificationService.create(
                 user_id=agent.user_id,
                 type="agent_optimized",
-                title=f"{agent.name} learned from fleet data",
-                message=f"Adopted winning params from fleet (realized PnL: ${winner.realized_pnl:.2f}). Resuming trading.",
+                title=f"{agent.name} learned from fleet — shared with all agents",
+                message=f"Adopted winning params (realized PnL: ${winner.realized_pnl:.2f}). Propagated to all {strategy_type} agents.",
                 data={"agent_id": str(agent.id), "trigger": "cooldown_study"},
             )
         else:

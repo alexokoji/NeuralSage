@@ -137,6 +137,57 @@ class LearningService:
         rows.sort(key=trust_score, reverse=True)
         return rows[:limit]
 
+    @staticmethod
+    async def propagate_to_fleet(
+        *,
+        strategy_type: str,
+        winning_params: dict[str, Any],
+        source_agent_id: uuid.UUID | None = None,
+    ) -> int:
+        """Push winning params to all agents using this strategy + update
+        the Strategy document defaults so new agents start smart.
+
+        Returns count of agents updated.
+        """
+        from app.models.agent import Agent
+        from app.models.strategy import Strategy as StrategyDoc
+        from loguru import logger
+
+        # Update strategy defaults in DB
+        strat_doc = await StrategyDoc.find_one(StrategyDoc.type == strategy_type)
+        if strat_doc:
+            strat_doc.default_params = {**strat_doc.default_params, **winning_params}
+            await strat_doc.save()
+
+        # Also check composite variants
+        if not strat_doc and strategy_type.startswith("composite_"):
+            strat_doc = await StrategyDoc.find_one(StrategyDoc.type == strategy_type)
+            if strat_doc:
+                strat_doc.default_params = {**strat_doc.default_params, **winning_params}
+                await strat_doc.save()
+
+        # Push to all agents with this strategy (except the source)
+        all_agents = await Agent.find(
+            Agent.status.in_(["active", "paused", "idle"]),
+        ).to_list()
+
+        updated = 0
+        for agent in all_agents:
+            if not agent.strategy or agent.strategy.type != strategy_type:
+                continue
+            if source_agent_id and agent.id == source_agent_id:
+                continue
+            agent.strategy_params = {**(agent.strategy_params or {}), **winning_params}
+            await agent.save()
+            updated += 1
+
+        if updated or strat_doc:
+            logger.info(
+                "propagated winning {} params to {} agent(s) + strategy defaults",
+                strategy_type, updated,
+            )
+        return updated
+
 
 def coerce_warm_starts(
     warm_starts: Iterable[dict[str, Any]],
