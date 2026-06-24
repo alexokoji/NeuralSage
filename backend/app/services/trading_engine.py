@@ -51,10 +51,10 @@ class TradingEngine:
                 agent.last_tick_at = now
                 agent.last_error = f"winding down: {open_count} trade(s) still open, waiting for TP/SL"
                 agent.tick_count = (agent.tick_count or 0) + 1
-                # Continue to the symbol loop below so exit signals can fire
-                # but block new entries (handled in _tick_symbol via winding_down check)
+                await agent.save()
+                # Continue to symbol loop so exit signals can fire
             else:
-                # All positions closed naturally — now start the real cooldown
+                # All positions closed — start cooldown
                 from datetime import timedelta
                 hours = agent.cooldown_hours or 1.0
                 agent.winding_down = False
@@ -62,27 +62,41 @@ class TradingEngine:
                 agent.last_error = None
                 await agent.save()
                 logger.info("agent {} all positions closed — starting {:.0f}h cooldown", agent.id, hours)
+                try:
+                    await self._study_fleet_and_adapt(agent)
+                except Exception:
+                    pass
                 await NotificationService.create(
                     user_id=agent.user_id,
                     type="agent_status",
                     title=f"{agent.name} all trades finished — studying for {hours:.0f}h",
-                    message=f"Open trades completed. Now studying fleet data for {hours:.0f}h before resuming.",
+                    message=f"Open trades completed. Studying fleet data. Auto-resumes in {hours:.0f}h.",
                     data={"agent_id": str(agent.id), "trigger": "cooldown_start"},
                 )
                 return {"skipped": True, "reason": "cooldown started after wind-down"}
 
         # --- Session cooldown: auto-resume when time is up ---
         if agent.cooldown_until:
-            if now < agent.cooldown_until:
-                remaining = (agent.cooldown_until - now).total_seconds() / 60
+            # Handle timezone-naive datetimes from DB
+            cooldown_dt = agent.cooldown_until
+            if cooldown_dt.tzinfo is None:
+                cooldown_dt = cooldown_dt.replace(tzinfo=timezone.utc)
+
+            if now < cooldown_dt:
+                remaining = (cooldown_dt - now).total_seconds() / 60
                 agent.last_error = f"studying fleet data ({remaining:.0f}m remaining)"
                 agent.last_tick_at = now
                 await agent.save()
                 return {"skipped": True, "reason": f"cooldown ({remaining:.0f}m left)"}
             else:
-                # Cooldown expired — auto-resume
+                # Cooldown expired — auto-resume immediately
+                logger.info(
+                    "agent {} cooldown expired (was until {}, now {}) — auto-resuming",
+                    agent.id, cooldown_dt.isoformat(), now.isoformat(),
+                )
                 agent.cooldown_until = None
                 agent.session_trade_count = 0
+                agent.winding_down = False
                 agent.last_error = None
                 await agent.save()
                 try:
