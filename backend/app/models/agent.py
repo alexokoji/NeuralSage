@@ -67,7 +67,7 @@ class Agent(Document):
     # 10-trade session cooldown: after placing this many trades, the agent
     # pauses for cooldown_hours to study fleet data before resuming.
     trades_per_session: int = 10
-    cooldown_hours: float = 3.0
+    cooldown_hours: float = 1.0
     session_trade_count: int = 0
     cooldown_until: Optional[datetime] = None
 
