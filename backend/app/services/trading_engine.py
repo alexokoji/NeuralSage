@@ -73,48 +73,6 @@ class TradingEngine:
 
         strategy = get_strategy(strategy_type)
 
-        # --- Profit protection ---
-        capital = float(agent.assigned_capital or 0)
-        if capital > 0:
-            pnl_pct = (float(agent.total_pnl or 0) / capital) * 100
-            protect_threshold = float(agent.profit_protect_pct or 15)
-            if pnl_pct >= protect_threshold and not agent.protect_mode:
-                agent.protect_mode = True
-                logger.info("agent {} entered protect mode: PnL {:.1f}% >= {:.1f}%", agent.id, pnl_pct, protect_threshold)
-                await NotificationService.create(
-                    user_id=agent.user_id,
-                    type="agent_status",
-                    title=f"{agent.name} in profit protection mode",
-                    message=f"PnL reached {pnl_pct:.1f}% — now only taking high-confidence trades at reduced size.",
-                    data={"agent_id": str(agent.id), "trigger": "profit_protect"},
-                )
-            elif pnl_pct < protect_threshold * 0.5 and agent.protect_mode:
-                agent.protect_mode = False
-
-        # --- AI win-rate watchdog: if win rate is poor, force a study break ---
-        total_t = agent.total_trades or 0
-        if total_t >= 5:
-            win_rate = (agent.winning_trades or 0) / total_t
-            pnl = float(agent.total_pnl or 0)
-            # Poor win rate AND losing money → force cooldown to learn
-            if win_rate < 0.35 and pnl < 0 and not agent.cooldown_until:
-                from datetime import timedelta
-                agent.cooldown_until = now + timedelta(hours=agent.cooldown_hours or 3)
-                agent.last_error = f"AI watchdog: win rate {win_rate:.0%} too low with negative PnL — forced study break"
-                await agent.save()
-                logger.warning(
-                    "agent {} AI watchdog triggered: win_rate={:.0%} pnl={:.2f} — forcing {:.0f}h cooldown",
-                    agent.id, win_rate, pnl, agent.cooldown_hours or 3,
-                )
-                await NotificationService.create(
-                    user_id=agent.user_id,
-                    type="agent_status",
-                    title=f"{agent.name} paused by AI watchdog",
-                    message=f"Win rate {win_rate:.0%} with ${pnl:.2f} PnL. Pausing to study fleet data and re-optimize.",
-                    data={"agent_id": str(agent.id), "trigger": "ai_watchdog"},
-                )
-                return {"skipped": True, "reason": "AI watchdog forced cooldown"}
-
         # Record that a tick ran even if it errors out below.
         agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
@@ -126,6 +84,52 @@ class TradingEngine:
             await agent.save()
             logger.warning("agent {}: cannot build client — {}", agent.id, exc)
             return {"skipped": True, "reason": str(exc)}
+
+        # --- Profit protection ---
+        capital = float(agent.assigned_capital or 0)
+        if capital > 0:
+            pnl_pct = (float(agent.total_pnl or 0) / capital) * 100
+            protect_threshold = float(agent.profit_protect_pct or 15)
+            if pnl_pct >= protect_threshold and not agent.protect_mode:
+                agent.protect_mode = True
+                # Close all open positions to lock in profit
+                await self._close_all_positions(agent, api_key, client, "profit protection — locking in gains")
+                logger.info("agent {} entered protect mode: PnL {:.1f}% >= {:.1f}% — positions closed", agent.id, pnl_pct, protect_threshold)
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} protecting profits ({pnl_pct:.1f}%)",
+                    message=f"All positions closed to lock in gains. Now only taking very high-confidence trades at 40% size.",
+                    data={"agent_id": str(agent.id), "trigger": "profit_protect"},
+                )
+            elif pnl_pct < protect_threshold * 0.5 and agent.protect_mode:
+                agent.protect_mode = False
+
+        # --- AI win-rate watchdog: if win rate is poor, force a study break ---
+        total_t = agent.total_trades or 0
+        if total_t >= 5:
+            win_rate = (agent.winning_trades or 0) / total_t
+            pnl = float(agent.total_pnl or 0)
+            if win_rate < 0.35 and pnl < 0 and not agent.cooldown_until:
+                # Close all positions before forcing cooldown
+                await self._close_all_positions(agent, api_key, client, "AI watchdog — poor win rate, closing before study break")
+                from datetime import timedelta
+                agent.cooldown_until = now + timedelta(hours=agent.cooldown_hours or 1)
+                agent.last_error = f"AI watchdog: win rate {win_rate:.0%} too low — studying fleet data"
+                await agent.save()
+                await client.close()
+                logger.warning(
+                    "agent {} AI watchdog: win_rate={:.0%} pnl={:.2f} — positions closed, forcing cooldown",
+                    agent.id, win_rate, pnl,
+                )
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} paused — positions closed",
+                    message=f"Win rate {win_rate:.0%} with ${pnl:.2f} PnL. All positions closed. Studying fleet data.",
+                    data={"agent_id": str(agent.id), "trigger": "ai_watchdog"},
+                )
+                return {"skipped": True, "reason": "AI watchdog forced cooldown"}
 
         signals_summary: list[str] = []
         try:
@@ -332,6 +336,24 @@ class TradingEngine:
             Position.is_open == True,  # noqa: E712
         )
 
+    async def _close_all_positions(self, agent: Agent, api_key, client, reason: str) -> int:
+        """Close every open position for this agent. Returns count closed."""
+        positions = await Position.find(
+            Position.agent_id == agent.id,
+            Position.is_open == True,  # noqa: E712
+        ).to_list()
+        closed = 0
+        for pos in positions:
+            try:
+                last_price = float(pos.current_price or pos.entry_price)
+                await self._close_position(agent, api_key, client, pos, last_price, reason)
+                closed += 1
+            except Exception as exc:
+                logger.warning("failed to close position {} for agent {}: {}", pos.id, agent.id, exc)
+        if closed:
+            logger.info("agent {}: closed {} open position(s) — {}", agent.id, closed, reason)
+        return closed
+
     async def _open_trade(
         self,
         *,
@@ -442,18 +464,20 @@ class TradingEngine:
         agent.session_trade_count = (agent.session_trade_count or 0) + 1
         max_session = agent.trades_per_session or 10
         if agent.session_trade_count >= max_session:
-            hours = agent.cooldown_hours or 3.0
+            # Close all open positions before cooling down
+            await self._close_all_positions(agent, api_key, client, "session cooldown — closing before study break")
+            hours = agent.cooldown_hours or 1.0
             from datetime import timedelta
             agent.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=hours)
             logger.info(
-                "agent {} completed session ({} trades) — cooling down for {:.1f}h to study fleet data",
+                "agent {} completed session ({} trades) — closed positions, cooling down for {:.1f}h",
                 agent.id, agent.session_trade_count, hours,
             )
             await NotificationService.create(
                 user_id=agent.user_id,
                 type="agent_status",
                 title=f"{agent.name} pausing to study ({agent.session_trade_count} trades done)",
-                message=f"Cooling down for {hours:.0f}h to analyse fleet data before next session.",
+                message=f"All positions closed. Cooling down for {hours:.0f}h to analyse fleet data.",
                 data={"agent_id": str(agent.id), "trigger": "session_cooldown"},
             )
 
