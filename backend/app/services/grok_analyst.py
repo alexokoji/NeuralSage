@@ -102,7 +102,7 @@ Do not include any explanation outside the JSON.
 # Public API
 # ------------------------------------------------------------------ #
 
-async def validate_signal(
+async def analyse_market(
     signal: Signal,
     candles: pd.DataFrame,
     *,
@@ -112,80 +112,149 @@ async def validate_signal(
     strategy_params: dict[str, Any],
     agent_context: dict[str, Any] | None = None,
 ) -> Signal:
-    """Validate/enhance a rule-based strategy signal with Grok analysis.
+    """AI-powered deep market analysis — the primary decision maker.
 
-    Returns a (possibly modified) Signal. Falls back to the original signal
-    on any Grok error.
+    The strategy screener identifies a *potential* opportunity. This function
+    performs the real analysis: market structure, trend quality, volume
+    confirmation, risk/reward, and timing. Only approves entries where
+    multiple factors align.
+
+    Returns a Signal. Falls back to HOLD (not the original signal) on error
+    when the signal is an entry — we never enter without AI approval.
     """
     try:
         client = GrokClient()
     except GrokUnavailableError:
-        return signal  # degrade gracefully
+        # No AI available — only allow entries with very high strategy confidence
+        if signal.action in ("enter_long", "enter_short") and signal.confidence < 0.80:
+            return Signal("hold", 0.3, "AI unavailable — holding (confidence too low for unvalidated entry)")
+        return signal
 
-    candle_text = _summarise_candles(candles)
+    candle_text = _summarise_candles(candles, n=30)
     indicator_text = _indicator_summary(candles)
-    agent_ctx_text = json.dumps(agent_context or {}, indent=2)
+    agent_ctx = agent_context or {}
+    agent_ctx_text = json.dumps(agent_ctx, indent=2)
 
-    prompt = f"""Market context:
-Symbol: {symbol}  Timeframe: {timeframe}  Strategy: {strategy_type}
-Active params: {json.dumps(strategy_params)}
+    # Calculate additional market context for the AI
+    close = candles["close"]
+    volume = candles["volume"]
+    recent_close = close.tail(10)
+    avg_volume_20 = float(volume.tail(20).mean())
+    current_volume = float(volume.iloc[-1])
+    vol_ratio = current_volume / max(avg_volume_20, 1e-9)
+    price_range_pct = (float(recent_close.max()) - float(recent_close.min())) / float(recent_close.mean()) * 100
+    candle_bodies = (close.tail(5) - candles["open"].tail(5)).abs()
+    candle_wicks_upper = candles["high"].tail(5) - close.tail(5).combine(candles["open"].tail(5), max)
+    candle_wicks_lower = close.tail(5).combine(candles["open"].tail(5), min) - candles["low"].tail(5)
+    avg_body = float(candle_bodies.mean())
+    avg_wick = float((candle_wicks_upper + candle_wicks_lower).mean())
+    indecision = avg_wick > avg_body * 1.5
+
+    market_context = {
+        "volume_vs_avg": f"{vol_ratio:.2f}x",
+        "volume_trend": "above avg" if vol_ratio > 1.2 else "below avg" if vol_ratio < 0.8 else "average",
+        "price_range_10_candles_pct": f"{price_range_pct:.2f}%",
+        "candle_indecision": indecision,
+        "recent_momentum": "bullish" if float(close.iloc[-1]) > float(close.iloc[-5]) else "bearish",
+    }
+
+    prompt = f"""You are the AI brain of a trading agent. Perform a DEEP market analysis before making a decision.
+
+=== MARKET DATA ===
+Symbol: {symbol} | Timeframe: {timeframe}
 {candle_text}
 Indicators: {indicator_text}
-Agent state: {agent_ctx_text}
+Volume: {market_context['volume_vs_avg']} of 20-period average ({market_context['volume_trend']})
+10-candle range: {market_context['price_range_10_candles_pct']}
+Candle indecision (long wicks): {market_context['candle_indecision']}
+Recent momentum (5 candles): {market_context['recent_momentum']}
 
-Rule-based signal:
-  action: {signal.action}
-  confidence: {signal.confidence:.2f}
-  reason: {signal.reason}
-  suggested_stop_loss_pct: {signal.suggested_stop_loss_pct}
-  suggested_take_profit_pct: {signal.suggested_take_profit_pct}
+=== SCREENER SIGNAL (preliminary, not confirmed) ===
+The strategy screener flagged: {signal.action} (confidence: {signal.confidence:.2f})
+Reason: {signal.reason}
 
-Task: Review the signal in the context of the price action and indicators above.
-Respond with a JSON object:
+=== AGENT STATE ===
+{agent_ctx_text}
+
+=== YOUR ANALYSIS TASK ===
+Perform these checks IN ORDER. If any check fails, output "hold":
+
+1. MARKET STRUCTURE: Is the market trending or ranging? Trending markets
+   favor trend-following entries. Ranging markets favor mean-reversion.
+   Does the strategy type ({strategy_type}) match the current structure?
+
+2. TREND QUALITY: Is the trend strong and clean, or choppy with
+   frequent reversals? Only enter in clean trends or clear reversals.
+
+3. VOLUME CONFIRMATION: Is volume supporting the move? Breakouts need
+   above-average volume. Reversals need climactic volume followed by
+   declining volume. Below-average volume = weak signal.
+
+4. CANDLE QUALITY: Are the recent candles showing conviction (strong
+   bodies) or indecision (long wicks, small bodies, dojis)?
+   Indecision candles = do NOT enter.
+
+5. TIMING: Is this an early entry or are we chasing? If the move
+   already happened 3+ candles ago, it's too late — hold.
+
+6. RISK/REWARD: Calculate if the entry has at least 2:1 reward to
+   risk based on the nearest support/resistance levels.
+
+7. AGENT HISTORY: If the agent has been losing, be EXTRA conservative.
+   If win rate is below 50%, only approve the strongest setups.
+
+Output a JSON object:
 {{
   "action": "<enter_long|enter_short|exit|hold>",
-  "confidence": <0.0–1.0>,
-  "reason": "<one-sentence explanation>",
-  "suggested_stop_loss_pct": <float or null>,
-  "suggested_take_profit_pct": <float or null>
+  "confidence": <0.3–0.85>,
+  "reason": "<your analysis summary — what you checked and why you decided this>",
+  "market_structure": "<trending_up|trending_down|ranging|choppy>",
+  "suggested_stop_loss_pct": <float>,
+  "suggested_take_profit_pct": <float>
 }}
 
-STRICT RULES — capital preservation first:
-- DEFAULT TO HOLD. Only approve an entry if you see clear, multi-signal confirmation.
-- If even ONE of these is true, override to "hold":
-  * The trend direction is ambiguous or sideways
-  * Volume is declining or below average
-  * The last 3-5 candles show indecision (dojis, long wicks)
-  * The entry is chasing a move that already happened (late entry)
-  * Risk/reward ratio is below 2:1
-- On short timeframes (1m, 5m, 15m): require STRONGER confirmation than on 1h/4h. Noise is high.
-- If the agent has recent losses (check agent state), raise your bar even higher.
-- Tighten stop losses when you see high volatility. Widen take profits only when trend is strong.
-- Keep confidence strictly between 0.3 and 0.85 (never higher — overconfidence kills accounts).
-- When in doubt: HOLD. A missed trade costs nothing; a bad trade costs capital.
+CRITICAL RULES:
+- You are the LAST LINE OF DEFENSE. If you approve, money is on the line.
+- DEFAULT TO HOLD. Only approve when checks 1-6 ALL pass.
+- On {timeframe} timeframe: {"be EXTRA strict — noise is very high, most signals are false" if timeframe in ("1m", "5m", "15m") else "standard strictness applies"}.
+- Never chase. Never enter indecision. Never enter against the trend.
+- A missed trade is FREE. A bad trade COSTS MONEY.
 """
     try:
         result = await client.chat_json(
             [{"role": "user", "content": prompt}],
             system=_TRADING_SYSTEM,
-            mini=True,  # use the faster model for per-tick calls
+            mini=False,  # use the FULL model for analysis — this is the critical decision
         )
-        action: SignalAction = result.get("action", signal.action)
+        action: SignalAction = result.get("action", "hold")
         if action not in ("enter_long", "enter_short", "exit", "hold"):
-            action = signal.action
-        confidence = float(result.get("confidence", signal.confidence))
+            action = "hold"
+        confidence = float(result.get("confidence", 0.4))
         confidence = max(0.3, min(0.85, confidence))
+
+        reason = result.get("reason", "")
+        structure = result.get("market_structure", "")
+        if structure:
+            reason = f"[{structure}] {reason}"
+
         return Signal(
             action=action,
             confidence=confidence,
-            reason=f"[Grok] {result.get('reason', '')}",
+            reason=f"[AI] {reason}",
             suggested_stop_loss_pct=result.get("suggested_stop_loss_pct") or signal.suggested_stop_loss_pct,
             suggested_take_profit_pct=result.get("suggested_take_profit_pct") or signal.suggested_take_profit_pct,
-            metadata={**(signal.metadata or {}), "grok_validated": True},
+            metadata={**(signal.metadata or {}), "ai_analysed": True, "market_structure": structure},
         )
     except GrokError as exc:
-        logger.warning("Grok signal validation failed (using original): {}", exc)
+        logger.warning("AI market analysis failed: {}", exc)
+        # Without AI approval, only allow very high confidence entries
+        if signal.action in ("enter_long", "enter_short") and signal.confidence < 0.80:
+            return Signal("hold", 0.3, f"AI unavailable ({exc}) — holding (no unvalidated entries)")
         return signal
+
+
+# Keep backward compatibility
+validate_signal = analyse_market
 
 
 async def suggest_params(

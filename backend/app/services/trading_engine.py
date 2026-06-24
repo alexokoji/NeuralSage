@@ -198,13 +198,18 @@ class TradingEngine:
             in_position=open_position is not None,
             position_side=open_position.side if open_position else None,
         )
+        # Step 1: Strategy SCREENER — identifies potential opportunities
         signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
-        # Only call Grok when there's actually a trade decision to validate —
-        # hold signals don't need AI review and burning the rate limit on them
-        # means enter/exit signals get 429'd instead.
+        # Step 2: AI ANALYST — the real brain. Performs deep market analysis
+        # on any non-hold signal before allowing entry. The strategy is just
+        # a screener; the AI decides whether to actually trade.
         if signal.action != "hold":
-            signal = await grok_analyst.validate_signal(
+            win_rate = (
+                (agent.winning_trades / agent.total_trades)
+                if agent.total_trades > 0 else 0.5
+            )
+            signal = await grok_analyst.analyse_market(
                 signal,
                 df,
                 symbol=symbol,
@@ -213,10 +218,16 @@ class TradingEngine:
                 strategy_params=agent.strategy_params or {},
                 agent_context={
                     "agent_id": str(agent.id),
+                    "agent_name": agent.name,
                     "total_trades": agent.total_trades,
+                    "winning_trades": agent.winning_trades,
+                    "win_rate": f"{win_rate:.0%}",
                     "total_pnl": float(agent.total_pnl or 0),
+                    "current_day_pnl": float(agent.current_day_pnl or 0),
                     "confidence_score": float(agent.confidence_score or 50),
                     "in_position": ctx.in_position,
+                    "is_protect_mode": getattr(agent, "protect_mode", False),
+                    "session_trades": getattr(agent, "session_trade_count", 0),
                 },
             )
 
