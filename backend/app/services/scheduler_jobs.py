@@ -74,6 +74,32 @@ async def run_trading_tick_for_all_agents() -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Keep-alive ping — prevents Render free tier from spinning down
+# --------------------------------------------------------------------------- #
+
+
+async def keep_alive_ping() -> None:
+    """Ping external health endpoint to prevent Render free tier spin-down.
+
+    Render only counts external HTTP requests for its idle timer, so we
+    hit our own public URL. Falls back to localhost if no external URL.
+    """
+    import httpx
+    import os
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if external_url:
+        url = f"{external_url}/health"
+    else:
+        url = f"http://localhost:{settings.APP_PORT}/health"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+        logger.debug("keep-alive ping {} -> {}", url, resp.status_code)
+    except Exception as exc:
+        logger.debug("keep-alive ping failed: {}", exc)
+
+
+# --------------------------------------------------------------------------- #
 # Optimization sweep — runs every OPTIMIZATION_INTERVAL_HOURS
 # --------------------------------------------------------------------------- #
 

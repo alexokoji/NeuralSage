@@ -20,6 +20,7 @@ from app.services.scheduler_jobs import (
     run_daily_rollover,
     run_optimization_sweep,
     run_trading_tick_for_all_agents,
+    keep_alive_ping,
 )
 
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -62,9 +63,19 @@ def start() -> None:
         replace_existing=True,
     )
 
+    # Self-ping to prevent Render free tier from spinning down (15min idle timeout).
+    sched.add_job(
+        keep_alive_ping,
+        IntervalTrigger(minutes=10),
+        id="keep_alive",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+
     sched.start()
     logger.info(
-        "in-process scheduler started: trade_tick={}s, optimization=every {}h, rollover=daily 00:01 UTC",
+        "in-process scheduler started: trade_tick={}s, optimization=every {}h, rollover=daily 00:01 UTC, keep_alive=10m",
         settings.TRADE_LOOP_INTERVAL_SECONDS,
         settings.OPTIMIZATION_INTERVAL_HOURS,
     )

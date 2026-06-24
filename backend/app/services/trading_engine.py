@@ -38,27 +38,34 @@ class TradingEngine:
         if agent.status != "active":
             return {"skipped": True, "reason": f"agent {agent.status}"}
 
-        # --- Session cooldown: after N trades, pause to study fleet data ---
         now = datetime.now(timezone.utc)
-        if agent.cooldown_until and now < agent.cooldown_until:
-            remaining = (agent.cooldown_until - now).total_seconds() / 60
-            agent.last_error = f"cooldown: studying fleet data ({remaining:.0f}m remaining)"
-            agent.last_tick_at = now
-            await agent.save()
-            return {"skipped": True, "reason": f"cooldown ({remaining:.0f}m left)"}
 
-        # Cooldown just ended — reset session and study fleet winners
-        if agent.cooldown_until and now >= agent.cooldown_until:
-            agent.cooldown_until = None
-            agent.session_trade_count = 0
-            agent.last_error = None
-            await agent.save()
-            # Study fleet data and adopt winning params if available
-            try:
-                await self._study_fleet_and_adapt(agent)
-            except Exception:
-                pass
-            logger.info("agent {} cooldown ended — session reset, fleet data studied", agent.id)
+        # --- Session cooldown: auto-resume when time is up ---
+        if agent.cooldown_until:
+            if now < agent.cooldown_until:
+                remaining = (agent.cooldown_until - now).total_seconds() / 60
+                agent.last_error = f"cooldown: studying fleet data ({remaining:.0f}m remaining)"
+                agent.last_tick_at = now
+                await agent.save()
+                return {"skipped": True, "reason": f"cooldown ({remaining:.0f}m left)"}
+            else:
+                # Cooldown expired — auto-resume, study fleet, reset session
+                agent.cooldown_until = None
+                agent.session_trade_count = 0
+                agent.last_error = None
+                await agent.save()
+                try:
+                    await self._study_fleet_and_adapt(agent)
+                except Exception:
+                    pass
+                logger.info("agent {} auto-resumed after cooldown — session reset, fleet studied", agent.id)
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} resumed trading",
+                    message="Cooldown ended. Fleet data studied. New session started.",
+                    data={"agent_id": str(agent.id), "trigger": "cooldown_end"},
+                )
 
         strategy_type = agent.strategy.type if agent.strategy else None
         if not strategy_type:
@@ -66,20 +73,47 @@ class TradingEngine:
 
         strategy = get_strategy(strategy_type)
 
-        # --- Profit protection: check if we've reached the target ---
+        # --- Profit protection ---
         capital = float(agent.assigned_capital or 0)
         if capital > 0:
             pnl_pct = (float(agent.total_pnl or 0) / capital) * 100
             protect_threshold = float(agent.profit_protect_pct or 15)
             if pnl_pct >= protect_threshold and not agent.protect_mode:
                 agent.protect_mode = True
-                logger.info(
-                    "agent {} entered protect mode: PnL {:.1f}% >= {:.1f}% target",
-                    agent.id, pnl_pct, protect_threshold,
+                logger.info("agent {} entered protect mode: PnL {:.1f}% >= {:.1f}%", agent.id, pnl_pct, protect_threshold)
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} in profit protection mode",
+                    message=f"PnL reached {pnl_pct:.1f}% — now only taking high-confidence trades at reduced size.",
+                    data={"agent_id": str(agent.id), "trigger": "profit_protect"},
                 )
             elif pnl_pct < protect_threshold * 0.5 and agent.protect_mode:
-                # Exit protect mode if profit drops below half the threshold
                 agent.protect_mode = False
+
+        # --- AI win-rate watchdog: if win rate is poor, force a study break ---
+        total_t = agent.total_trades or 0
+        if total_t >= 5:
+            win_rate = (agent.winning_trades or 0) / total_t
+            pnl = float(agent.total_pnl or 0)
+            # Poor win rate AND losing money → force cooldown to learn
+            if win_rate < 0.35 and pnl < 0 and not agent.cooldown_until:
+                from datetime import timedelta
+                agent.cooldown_until = now + timedelta(hours=agent.cooldown_hours or 3)
+                agent.last_error = f"AI watchdog: win rate {win_rate:.0%} too low with negative PnL — forced study break"
+                await agent.save()
+                logger.warning(
+                    "agent {} AI watchdog triggered: win_rate={:.0%} pnl={:.2f} — forcing {:.0f}h cooldown",
+                    agent.id, win_rate, pnl, agent.cooldown_hours or 3,
+                )
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} paused by AI watchdog",
+                    message=f"Win rate {win_rate:.0%} with ${pnl:.2f} PnL. Pausing to study fleet data and re-optimize.",
+                    data={"agent_id": str(agent.id), "trigger": "ai_watchdog"},
+                )
+                return {"skipped": True, "reason": "AI watchdog forced cooldown"}
 
         # Record that a tick ran even if it errors out below.
         agent.last_tick_at = now
