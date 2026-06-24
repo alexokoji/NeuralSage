@@ -170,6 +170,7 @@ async def control_agent(
         agent.recovery_mode = True
         agent.cooldown_until = None
         agent.session_trade_count = 0
+        agent.winding_down = False
         agent.last_error = None
     elif body.action == "pause":
         agent.status = "paused"

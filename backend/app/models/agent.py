@@ -65,11 +65,13 @@ class Agent(Document):
     recovery_mode: bool = False
 
     # 10-trade session cooldown: after placing this many trades, the agent
-    # pauses for cooldown_hours to study fleet data before resuming.
+    # enters winding_down mode (no new entries, existing trades run to finish),
+    # then pauses for cooldown_hours to study fleet data before resuming.
     trades_per_session: int = 10
     cooldown_hours: float = 1.0
     session_trade_count: int = 0
     cooldown_until: Optional[datetime] = None
+    winding_down: bool = False
 
     # Profit protection: when total_pnl reaches this % of assigned_capital,
     # the agent switches to ultra-conservative mode (only very high confidence entries).
