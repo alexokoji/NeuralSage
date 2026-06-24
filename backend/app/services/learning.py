@@ -117,8 +117,17 @@ class LearningService:
         if not pool:
             return []
 
-        pool.sort(key=trust_score, reverse=True)
-        return [dict(o.params) for o in pool[:n]]
+        # Only use observations that are profitable or untested (no realized data yet).
+        # Never seed the optimizer with params that lost real money.
+        safe_pool = [
+            o for o in pool
+            if float(o.realized_pnl or 0) >= 0 or int(o.realized_trades or 0) == 0
+        ]
+        if not safe_pool:
+            safe_pool = pool[:2]
+
+        safe_pool.sort(key=trust_score, reverse=True)
+        return [dict(o.params) for o in safe_pool[:n]]
 
     @staticmethod
     async def fleet_best(
@@ -134,8 +143,14 @@ class LearningService:
         if timeframe:
             query = query.find(StrategyObservation.timeframe == timeframe)
         rows = await query.to_list()
-        rows.sort(key=trust_score, reverse=True)
-        return rows[:limit]
+        # Filter out observations with proven negative PnL — never recommend
+        # params that lost real money to other agents.
+        safe_rows = [
+            r for r in rows
+            if float(r.realized_pnl or 0) >= 0 or int(r.realized_trades or 0) < 3
+        ]
+        safe_rows.sort(key=trust_score, reverse=True)
+        return safe_rows[:limit]
 
     @staticmethod
     async def propagate_to_fleet(
@@ -143,15 +158,43 @@ class LearningService:
         strategy_type: str,
         winning_params: dict[str, Any],
         source_agent_id: uuid.UUID | None = None,
+        realized_pnl: float | None = None,
     ) -> int:
         """Push winning params to all agents using this strategy + update
         the Strategy document defaults so new agents start smart.
+
+        SAFETY: Only propagates if the source has positive realized PnL.
+        Never spreads losing strategies to the fleet.
 
         Returns count of agents updated.
         """
         from app.models.agent import Agent
         from app.models.strategy import Strategy as StrategyDoc
         from loguru import logger
+
+        # SAFETY CHECK: verify the params come from a profitable source.
+        # If realized_pnl is provided and negative, refuse to propagate.
+        if realized_pnl is not None and realized_pnl < 0:
+            logger.warning(
+                "BLOCKED propagation of {} params — realized_pnl is negative ({:.2f})",
+                strategy_type, realized_pnl,
+            )
+            return 0
+
+        # Double-check: look at the best fleet observation for this strategy.
+        # If the fleet's best has negative PnL, something is wrong — don't spread it.
+        best = await StrategyObservation.find(
+            StrategyObservation.strategy_type == strategy_type,
+        ).to_list()
+        if best:
+            best.sort(key=trust_score, reverse=True)
+            top = best[0]
+            if float(top.realized_pnl or 0) < 0 and int(top.realized_trades or 0) >= 3:
+                logger.warning(
+                    "BLOCKED propagation of {} params — fleet best has negative realized PnL ({:.2f})",
+                    strategy_type, float(top.realized_pnl or 0),
+                )
+                return 0
 
         # Update strategy defaults in DB
         strat_doc = await StrategyDoc.find_one(StrategyDoc.type == strategy_type)
