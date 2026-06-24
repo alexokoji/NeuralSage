@@ -102,6 +102,13 @@ export interface Agent {
   last_signal_symbol: string | null;
   last_error: string | null;
   tick_count: number;
+  winding_down?: boolean;
+  cooldown_until?: string | null;
+  session_trade_count?: number;
+  trades_per_session?: number;
+  protect_mode?: boolean;
+  profit_protect_pct?: number;
+  recovery_mode?: boolean;
 }
 
 export interface AgentCreate {

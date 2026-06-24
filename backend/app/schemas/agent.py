@@ -99,6 +99,13 @@ class AgentPublic(BaseModel):
     last_signal_symbol: str | None = None
     last_error: str | None = None
     tick_count: int = 0
+    winding_down: bool = False
+    cooldown_until: datetime | None = None
+    session_trade_count: int = 0
+    trades_per_session: int = 10
+    protect_mode: bool = False
+    profit_protect_pct: float = 15.0
+    recovery_mode: bool = False
 
 
 class AgentControlAction(BaseModel):
