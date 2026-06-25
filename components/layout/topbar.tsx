@@ -1,10 +1,11 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { Menu, TrendingUp, TrendingDown } from 'lucide-react';
+import { Menu, TrendingUp, TrendingDown, Brain } from 'lucide-react';
 import { usePolling } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
 import { NotificationBell } from './notification-bell';
+import { useEffect, useState } from 'react';
 
 const pageTitles: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -22,8 +23,27 @@ export function Topbar({ onMobileMenuClick }: TopbarProps) {
   const pathname = usePathname();
   const title =
     Object.entries(pageTitles).find(([p]) => pathname.startsWith(p))?.[1] || 'NeuralTrade';
-  // Poll the public ticker endpoint every 15s.
   const { data: tickers } = usePolling(() => api.tickers(), 15000);
+
+  const [aiStatus, setAiStatus] = useState<{
+    primary_provider: string;
+    gpt_available: boolean;
+    grok_available: boolean;
+    keys_available: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchStatus = async () => {
+      try {
+        const s = await api.aiStatus();
+        if (mounted) setAiStatus(s as any);
+      } catch { /* ignore */ }
+    };
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 30_000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   return (
     <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm flex items-center justify-between gap-3 px-4 md:px-6 shrink-0 relative z-50">
@@ -89,6 +109,32 @@ export function Topbar({ onMobileMenuClick }: TopbarProps) {
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
+        {aiStatus && (
+          <div
+            className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium ${
+              aiStatus.primary_provider === 'gpt'
+                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                : aiStatus.grok_available
+                ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                : 'bg-red-500/10 text-red-400 border border-red-500/20'
+            }`}
+            title={`AI: ${aiStatus.primary_provider?.toUpperCase()} | GPT: ${aiStatus.gpt_available ? 'ON' : 'OFF'} | Groq: ${aiStatus.grok_available ? 'ON' : 'OFF'} | Keys: ${aiStatus.keys_available}`}
+          >
+            <Brain className="w-3 h-3" />
+            <span className="hidden sm:inline">
+              {aiStatus.primary_provider === 'gpt' ? 'GPT' : aiStatus.grok_available ? 'Groq' : 'OFF'}
+            </span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                aiStatus.primary_provider === 'gpt'
+                  ? 'bg-emerald-400 animate-pulse'
+                  : aiStatus.grok_available
+                  ? 'bg-blue-400 animate-pulse'
+                  : 'bg-red-400'
+              }`}
+            />
+          </div>
+        )}
         <NotificationBell />
         <div className="text-[11px] md:text-xs text-muted-foreground font-mono">
           {new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })} WAT
