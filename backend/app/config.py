@@ -70,10 +70,9 @@ class Settings(BaseSettings):
     BITGET_REST_URL: str = "https://api.bitget.com"
     BITGET_WS_PUBLIC_URL: str = "wss://ws.bitget.com/v2/ws/public"
 
-    # OANDA — Forex trading (https://www.oanda.com)
-    # Practice: https://api-fxpractice.oanda.com  Live: https://api-fxtrade.oanda.com
-    OANDA_REST_URL: str = "https://api-fxpractice.oanda.com"
-    OANDA_STREAM_URL: str = "https://stream-fxpractice.oanda.com"
+    # MetaAPI — MT5 forex trading via cloud bridge (https://metaapi.cloud)
+    # Auth token and account ID are stored per-user in the API keys collection.
+    # No server-level env vars needed — all config goes through the UI.
 
     # Trading hard caps
     MAX_RISK_PER_TRADE_PCT: float = 2.0
