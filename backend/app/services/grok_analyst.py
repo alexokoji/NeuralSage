@@ -221,7 +221,7 @@ Perform these checks IN ORDER. If any check fails, output "hold":
 Output a JSON object:
 {{
   "action": "<enter_long|enter_short|exit|hold>",
-  "confidence": <0.3–0.85>,
+  "confidence": <0.3–0.90>,
   "reason": "<your analysis summary — what you checked and why you decided this>",
   "market_structure": "<trending_up|trending_down|ranging|choppy>",
   "suggested_stop_loss_pct": <float>,
@@ -230,10 +230,11 @@ Output a JSON object:
 
 CRITICAL RULES:
 - You are the LAST LINE OF DEFENSE. If you approve, money is on the line.
-- DEFAULT TO HOLD. Only approve when checks 1-6 ALL pass.
-- On {timeframe} timeframe: {"be EXTRA strict — noise is very high, most signals are false" if timeframe in ("1m", "5m", "15m") else "standard strictness applies"}.
-- Never chase. Never enter indecision. Never enter against the trend.
-- A missed trade is FREE. A bad trade COSTS MONEY.
+- Approve when at least 4 of checks 1-6 pass and none are strongly negative.
+- On {timeframe} timeframe: {"scalping mode — volume and momentum matter most, allow quick entries with tight stops" if timeframe in ("1m", "5m") else "standard strictness — check all factors but allow reasonable setups" if timeframe == "15m" else "standard strictness applies"}.
+- Never chase a move that already happened 5+ candles ago.
+- For scalping strategies, favor action over caution — tight stops limit downside.
+- A missed trade is FREE. A bad trade COSTS MONEY. But never trading also costs opportunity.
 """
     try:
         result = await client.chat_json(
@@ -245,7 +246,7 @@ CRITICAL RULES:
         if action not in ("enter_long", "enter_short", "exit", "hold"):
             action = "hold"
         confidence = float(result.get("confidence", 0.4))
-        confidence = max(0.3, min(0.85, confidence))
+        confidence = max(0.3, min(0.90, confidence))
 
         reason = result.get("reason", "")
         structure = result.get("market_structure", "")

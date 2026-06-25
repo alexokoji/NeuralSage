@@ -22,7 +22,7 @@ class EMACrossoverStrategy(Strategy):
         "stop_loss_pct": 1.0,
         "take_profit_pct": 2.5,
         "position_size_pct": 3.0,
-        "min_confidence": 0.6,
+        "min_confidence": 0.50,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:

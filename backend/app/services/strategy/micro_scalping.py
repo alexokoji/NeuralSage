@@ -17,12 +17,12 @@ class MicroScalpingStrategy(Strategy):
     type = "micro_scalping"
     default_params: dict[str, Any] = {
         "ema_period": 8,
-        "deviation_pct": 0.25,
-        "profit_target_pct": 0.3,
+        "deviation_pct": 0.12,
+        "profit_target_pct": 0.25,
         "stop_loss_pct": 0.15,
-        "max_trades_per_hour": 6,
+        "max_trades_per_hour": 10,
         "position_size_pct": 1.5,
-        "min_confidence": 0.6,
+        "min_confidence": 0.50,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:
@@ -48,27 +48,32 @@ class MicroScalpingStrategy(Strategy):
             return Signal("hold", 0.5, "scalp running", metadata=meta)
 
         threshold = float(params["deviation_pct"])
-        # Extreme dip → fade to long.
+        min_conf = float(params.get("min_confidence", 0.50))
+
+        # Extreme dip → fade to long
         if deviation <= -threshold:
-            conf = min(1.0, 0.5 + abs(deviation) / (threshold * 4))
-            if conf >= params["min_confidence"]:
+            strength = abs(deviation) / threshold
+            conf = min(0.85, 0.55 + strength * 0.15)
+            if conf >= min_conf:
                 return Signal(
                     "enter_long",
                     conf,
-                    "scalp: extended below EMA",
+                    f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)",
                     suggested_stop_loss_pct=params["stop_loss_pct"],
                     suggested_take_profit_pct=params["profit_target_pct"],
                     metadata=meta,
                 )
+        # Extreme spike → fade to short
         if deviation >= threshold:
-            conf = min(1.0, 0.5 + abs(deviation) / (threshold * 4))
-            if conf >= params["min_confidence"]:
+            strength = abs(deviation) / threshold
+            conf = min(0.85, 0.55 + strength * 0.15)
+            if conf >= min_conf:
                 return Signal(
                     "enter_short",
                     conf,
-                    "scalp: extended above EMA",
+                    f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)",
                     suggested_stop_loss_pct=params["stop_loss_pct"],
                     suggested_take_profit_pct=params["profit_target_pct"],
                     metadata=meta,
                 )
-        return Signal("hold", 0.4, "no extreme", metadata=meta)
+        return Signal("hold", 0.4, f"deviation {deviation:.3f}% < threshold {threshold}%", metadata=meta)
