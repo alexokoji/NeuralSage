@@ -6,14 +6,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ExchangeName = Literal["bybit", "bitget", "bybit_testnet"]
+ExchangeName = Literal["bybit", "bitget", "bybit_testnet", "mt5", "mt5_live"]
 PermissionName = Literal["read", "trade"]
 
 
 class ApiKeyCreate(BaseModel):
     exchange: ExchangeName
     label: str = Field(default="", max_length=120)
-    api_key: str = Field(min_length=8, max_length=256)
+    api_key: str = Field(min_length=8, max_length=4096)
     api_secret: str = Field(min_length=8, max_length=512)
     is_testnet: bool = False
     permissions: list[PermissionName] = Field(default_factory=lambda: ["read", "trade"])
