@@ -14,7 +14,7 @@ class ApiKeyCreate(BaseModel):
     exchange: ExchangeName
     label: str = Field(default="", max_length=120)
     api_key: str = Field(min_length=8, max_length=4096)
-    api_secret: str = Field(min_length=8, max_length=512)
+    api_secret: str = Field(min_length=1, max_length=512)
     is_testnet: bool = False
     permissions: list[PermissionName] = Field(default_factory=lambda: ["read", "trade"])
 
