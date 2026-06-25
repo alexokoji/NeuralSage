@@ -23,7 +23,7 @@ class ApiKeyPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    exchange: ExchangeName
+    exchange: str
     label: str
     permissions: list[str]
     is_active: bool
