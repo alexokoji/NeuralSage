@@ -335,19 +335,28 @@ class TradingEngine:
             in_position=open_position is not None,
             position_side=open_position.side if open_position else None,
         )
-        # Step 1: Strategy SCREENER — identifies potential opportunities
-        signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
-        # Step 2: AI ANALYST — the real brain. Performs deep market analysis
-        # on any non-hold signal before allowing entry. The strategy is just
-        # a screener; the AI decides whether to actually trade.
-        if signal.action != "hold":
+        # Strategy screener runs as a HINT for the AI — not a gate
+        screener_signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
+
+        # AI is the PRIMARY decision maker. Call AI when:
+        # 1. Screener found a potential opportunity (non-hold)
+        # 2. We have an open position that may need managing
+        # 3. Every 3rd tick per agent for periodic market scanning (AI finds what screener misses)
+        tick_num = agent.tick_count or 0
+        should_call_ai = (
+            screener_signal.action != "hold"
+            or open_position is not None
+            or tick_num % 3 == 0
+        )
+
+        if should_call_ai:
             win_rate = (
                 (agent.winning_trades / agent.total_trades)
                 if agent.total_trades > 0 else 0.5
             )
             signal = await grok_analyst.analyse_market(
-                signal,
+                screener_signal,
                 df,
                 symbol=symbol,
                 timeframe=agent.timeframe,
@@ -365,8 +374,13 @@ class TradingEngine:
                     "in_position": ctx.in_position,
                     "is_protect_mode": getattr(agent, "protect_mode", False),
                     "session_trades": getattr(agent, "session_trade_count", 0),
+                    "screener_said": screener_signal.action,
+                    "screener_confidence": screener_signal.confidence,
+                    "screener_reason": screener_signal.reason,
                 },
             )
+        else:
+            signal = screener_signal
 
         # Track what this tick produced — caller will save the agent.
         agent.last_signal = signal.action

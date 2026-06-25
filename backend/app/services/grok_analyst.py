@@ -173,7 +173,13 @@ async def analyse_market(
         "recent_momentum": "bullish" if float(close.iloc[-1]) > float(close.iloc[-5]) else "bearish",
     }
 
-    prompt = f"""You are the AI brain of a trading agent. Perform a DEEP market analysis before making a decision.
+    # Build screener context
+    screener_ctx = agent_ctx.get("screener_said", signal.action) if agent_ctx else signal.action
+    screener_conf = agent_ctx.get("screener_confidence", signal.confidence) if agent_ctx else signal.confidence
+    screener_reason = agent_ctx.get("screener_reason", signal.reason) if agent_ctx else signal.reason
+
+    prompt = f"""You are the PRIMARY AI brain of a trading agent. YOU decide what trades to make.
+You are NOT a validator — you are the decision maker. Analyse the market and find opportunities.
 
 === MARKET DATA ===
 Symbol: {symbol} | Timeframe: {timeframe}
@@ -184,57 +190,48 @@ Volume: {market_context['volume_vs_avg']} of 20-period average ({market_context[
 Candle indecision (long wicks): {market_context['candle_indecision']}
 Recent momentum (5 candles): {market_context['recent_momentum']}
 
-=== SCREENER SIGNAL (preliminary, not confirmed) ===
-The strategy screener flagged: {signal.action} (confidence: {signal.confidence:.2f})
-Reason: {signal.reason}
+=== STRATEGY HINT (for context only — you make the final call) ===
+Strategy screener says: {screener_ctx} (confidence: {screener_conf:.2f})
+Screener reason: {screener_reason}
+Note: The screener is a simple indicator check. You can AGREE or DISAGREE with it.
+You can find opportunities the screener missed, or reject ones it flagged.
 
 === AGENT STATE ===
 {agent_ctx_text}
 
-=== YOUR ANALYSIS TASK ===
-Perform these checks IN ORDER. If any check fails, output "hold":
+=== YOUR TASK: FIND TRADING OPPORTUNITIES ===
+Analyse the candle data and decide whether to trade. Check:
 
-1. MARKET STRUCTURE: Is the market trending or ranging? Trending markets
-   favor trend-following entries. Ranging markets favor mean-reversion.
-   Does the strategy type ({strategy_type}) match the current structure?
+1. DIRECTION: Which way is price likely to move in the next few candles?
+   Look at momentum, EMA positions, recent highs/lows.
 
-2. TREND QUALITY: Is the trend strong and clean, or choppy with
-   frequent reversals? Only enter in clean trends or clear reversals.
+2. ENTRY QUALITY: Is now a good entry point? Look for pullbacks to
+   support, bounces off EMA, breakouts with momentum. Avoid entering
+   in the middle of nowhere.
 
-3. VOLUME CONFIRMATION: Is volume supporting the move? Breakouts need
-   above-average volume. Reversals need climactic volume followed by
-   declining volume. Below-average volume = weak signal.
+3. RISK/REWARD: Can you identify a clear stop loss level (recent
+   swing low/high) and a target that gives at least 1.5:1 reward?
 
-4. CANDLE QUALITY: Are the recent candles showing conviction (strong
-   bodies) or indecision (long wicks, small bodies, dojis)?
-   Indecision candles = do NOT enter.
-
-5. TIMING: Is this an early entry or are we chasing? If the move
-   already happened 3+ candles ago, it's too late — hold.
-
-6. RISK/REWARD: Calculate if the entry has at least 2:1 reward to
-   risk based on the nearest support/resistance levels.
-
-7. AGENT HISTORY: If the agent has been losing, be EXTRA conservative.
-   If win rate is below 50%, only approve the strongest setups.
+4. TIMING: Is the move fresh or are we late? Fresh moves with
+   momentum are good. Exhausted moves after big candles are bad.
 
 Output a JSON object:
 {{
   "action": "<enter_long|enter_short|exit|hold>",
   "confidence": <0.3–0.90>,
-  "reason": "<your analysis summary — what you checked and why you decided this>",
+  "reason": "<what you see in the market and why you're making this decision>",
   "market_structure": "<trending_up|trending_down|ranging|choppy>",
   "suggested_stop_loss_pct": <float>,
   "suggested_take_profit_pct": <float>
 }}
 
-CRITICAL RULES:
-- You are the LAST LINE OF DEFENSE. If you approve, money is on the line.
-- Approve when at least 4 of checks 1-6 pass and none are strongly negative.
-- On {timeframe} timeframe: {"scalping mode — volume and momentum matter most, allow quick entries with tight stops" if timeframe in ("1m", "5m") else "standard strictness — check all factors but allow reasonable setups" if timeframe == "15m" else "standard strictness applies"}.
-- Never chase a move that already happened 5+ candles ago.
-- For scalping strategies, favor action over caution — tight stops limit downside.
-- A missed trade is FREE. A bad trade COSTS MONEY. But never trading also costs opportunity.
+RULES:
+- YOU are the brain. The agent executes your decisions and learns from the results.
+- Be DECISIVE. If you see a setup, take it. Don't wait for perfection.
+- {"SCALPING MODE: Look for quick mean-reversion entries. Tight stops (0.1-0.3%), quick targets (0.2-0.5%). Volume spikes and momentum shifts are your signals. Trade frequently." if timeframe in ("1m", "5m", "15m") else "Look for clean trend entries or clear reversals with good R:R."}
+- Protect capital: use tight stop losses, but don't be afraid to enter when the setup is there.
+- If the agent has been losing (check win rate), adjust by tightening stops, not by refusing to trade.
+- An agent that never trades never learns. Find the opportunities.
 """
     try:
         result = await client.chat_json(
