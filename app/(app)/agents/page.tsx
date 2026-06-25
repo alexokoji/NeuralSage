@@ -407,7 +407,7 @@ function AgentCard({
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
-const MARKETS = [
+const CRYPTO_MARKETS = [
   'BTCUSDT',
   'ETHUSDT',
   'SOLUSDT',
@@ -425,6 +425,32 @@ const MARKETS = [
   'APTUSDT',
   'ARBUSDT',
 ];
+
+const FOREX_MARKETS = [
+  'EURUSD',
+  'GBPUSD',
+  'USDJPY',
+  'AUDUSD',
+  'USDCAD',
+  'USDCHF',
+  'NZDUSD',
+  'GBPJPY',
+  'EURJPY',
+  'EURGBP',
+  'AUDJPY',
+  'EURAUD',
+  'GBPAUD',
+  'XAUUSD',
+  'XAGUSD',
+];
+
+function getMarketsForExchange(exchange: string): string[] {
+  if (exchange.startsWith('oanda')) return FOREX_MARKETS;
+  return CRYPTO_MARKETS;
+}
+
+// Backward compat
+const MARKETS = CRYPTO_MARKETS;
 
 export default function AgentsPage() {
   const { data: agents, refetch: refetchAgents, error: agentsError } = usePolling(
@@ -534,7 +560,7 @@ export default function AgentsPage() {
         api_key_id: form.api_key_id,
         strategy_id: form.strategy_id,
         assigned_capital: form.capital,
-        currency: 'USDT',
+        currency: apiKeys?.find(k => k.id === form.api_key_id)?.exchange.startsWith('oanda') ? 'USD' : 'USDT',
         trading_pairs: form.pairs,
         timeframe: form.timeframe,
         max_risk_per_trade: form.riskPct,
@@ -760,7 +786,7 @@ export default function AgentsPage() {
                 </span>
               </Label>
               <div className="flex flex-wrap gap-1.5 p-3 bg-background border border-border rounded-lg max-h-36 overflow-y-auto">
-                {MARKETS.map(m => {
+                {getMarketsForExchange(apiKeys?.find(k => k.id === editForm.api_key_id)?.exchange || editTarget?.strategy?.type || '').map(m => {
                   const selected = editForm.pairs.includes(m);
                   return (
                     <button
@@ -952,7 +978,7 @@ export default function AgentsPage() {
                 </span>
               </Label>
               <div className="flex flex-wrap gap-1.5 p-3 bg-background border border-border rounded-lg max-h-36 overflow-y-auto">
-                {MARKETS.map(m => {
+                {getMarketsForExchange(apiKeys?.find(k => k.id === form.api_key_id)?.exchange || '').map(m => {
                   const selected = form.pairs.includes(m);
                   return (
                     <button

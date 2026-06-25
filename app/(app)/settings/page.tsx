@@ -40,6 +40,8 @@ const exchangeColors: Record<string, string> = {
   bybit: 'text-orange-400',
   bitget: 'text-blue-400',
   bybit_testnet: 'text-orange-400',
+  oanda: 'text-green-400',
+  oanda_live: 'text-green-500',
 };
 
 const tabs = ['API Keys', 'Risk Settings', 'Notifications', 'Account'];
@@ -89,7 +91,7 @@ export default function SettingsPage() {
         label: newKey.label,
         api_key: newKey.apiKey,
         api_secret: apiSecret,
-        is_testnet: newKey.exchange === 'bybit_testnet',
+        is_testnet: newKey.exchange === 'bybit_testnet' || newKey.exchange === 'oanda',
       });
       // Best-effort verification immediately after add.
       try {
@@ -226,7 +228,7 @@ export default function SettingsPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-lg bg-accent border border-border flex items-center justify-center text-lg">
-                      {key.exchange.startsWith('bybit') ? '⬡' : '◈'}
+                      {key.exchange.startsWith('bybit') ? '⬡' : key.exchange.startsWith('oanda') ? '◉' : '◈'}
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
@@ -362,6 +364,8 @@ export default function SettingsPage() {
                       <SelectItem value="bybit">Bybit (mainnet)</SelectItem>
                       <SelectItem value="bybit_testnet">Bybit Testnet</SelectItem>
                       <SelectItem value="bitget">Bitget</SelectItem>
+                      <SelectItem value="oanda">OANDA (practice)</SelectItem>
+                      <SelectItem value="oanda_live">OANDA (live)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -423,6 +427,25 @@ export default function SettingsPage() {
                       required
                       className="bg-background border-border"
                     />
+                  </div>
+                )}
+                {(newKey.exchange === 'oanda' || newKey.exchange === 'oanda_live') && (
+                  <div className="p-3 bg-green-500/5 border border-green-500/15 rounded-lg space-y-2">
+                    <p className="text-[10px] text-green-400 font-medium">
+                      OANDA Forex {newKey.exchange === 'oanda' ? '(Practice)' : '(Live)'}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      <strong>API Key</strong>: Your OANDA API token (generate at hub.oanda.com → Manage API Access).
+                      <br />
+                      <strong>API Secret</strong>: Enter your <strong>Account ID</strong> (e.g. 101-001-12345678-001).
+                      <br />
+                      Use forex pairs like EURUSD, GBPJPY, USDJPY when creating agents.
+                    </p>
+                    {newKey.exchange === 'oanda_live' && (
+                      <p className="text-[10px] text-red-400 font-medium mt-1">
+                        ⚠ Live trading uses real money. Start with practice mode first.
+                      </p>
+                    )}
                   </div>
                 )}
                 <div className="p-3 bg-orange-500/5 border border-orange-500/15 rounded-lg">

@@ -197,11 +197,55 @@ class TradingEngine:
             agent.last_signal_symbol = f"scanned {pairs_checked} pairs"
             agent.last_error = None
 
+        # Stuck agent nudge: if no trades in 50+ ticks, ask Groq to diagnose
+        ticks_since_trade = (agent.tick_count or 0)
+        if agent.last_trade_at:
+            ticks_since_start = (agent.tick_count or 0)
+        else:
+            ticks_since_start = ticks_since_trade
+
+        if (
+            ticks_since_trade > 0
+            and ticks_since_trade % 50 == 0
+            and agent.session_trade_count == 0
+            and not agent.winding_down
+            and not agent.cooldown_until
+        ):
+            try:
+                nudge = await grok_analyst.nudge_stuck_agent(
+                    agent_data={
+                        "name": agent.name,
+                        "strategy": agent.strategy.type if agent.strategy else None,
+                        "strategy_params": agent.strategy_params or {},
+                        "timeframe": agent.timeframe,
+                        "trading_pairs": agent.trading_pairs,
+                        "total_trades": agent.total_trades,
+                        "tick_count": agent.tick_count,
+                    },
+                    last_signals=["hold"] * 20,
+                )
+                if nudge and nudge.get("suggested_params"):
+                    old_params = dict(agent.strategy_params or {})
+                    agent.strategy_params = {**old_params, **nudge["suggested_params"]}
+                    agent.last_error = f"AI nudge: {nudge.get('diagnosis', 'adjusting params')}"
+                    logger.info(
+                        "agent {} stuck-agent nudge applied: {} → {}",
+                        agent.id, nudge.get("diagnosis"), nudge.get("suggested_params"),
+                    )
+                    await NotificationService.create(
+                        user_id=agent.user_id,
+                        type="agent_status",
+                        title=f"{agent.name} — AI adjusted params (no trades in {ticks_since_trade} ticks)",
+                        message=nudge.get("diagnosis", "Parameters adjusted to improve trade detection."),
+                        data={"agent_id": str(agent.id), "trigger": "stuck_nudge"},
+                    )
+            except Exception as exc:
+                logger.debug("stuck agent nudge failed: {}", exc)
+
         await agent.save()
         return {"ok": True}
 
     # Rough minimum qty per symbol — Bybit rejects orders below these sizes.
-    # Keys are prefix-matched (e.g. "BTC" matches BTCUSDT).
     _MIN_QTY: dict[str, float] = {
         "BTC": 0.001,
         "ETH": 0.01,
@@ -211,12 +255,21 @@ class TradingEngine:
     }
     _DEFAULT_MIN_QTY = 0.01
 
+    # Forex pairs have different minimums (in units of base currency)
+    _FOREX_MIN_QTY = 1  # OANDA allows 1 unit minimum
+
     @classmethod
-    def _min_qty_for(cls, symbol: str) -> float:
+    def _min_qty_for(cls, symbol: str, exchange: str = "") -> float:
+        if exchange.startswith("oanda"):
+            return cls._FOREX_MIN_QTY
         for prefix, min_q in cls._MIN_QTY.items():
             if symbol.upper().startswith(prefix):
                 return min_q
         return cls._DEFAULT_MIN_QTY
+
+    @staticmethod
+    def _is_forex(exchange: str) -> bool:
+        return exchange.startswith("oanda")
 
     # Symbols that persistently fail on all fallback providers — downgraded to
     # debug so they don't pollute logs on every tick.
@@ -364,7 +417,7 @@ class TradingEngine:
                 return
 
             # Enforce exchange minimum order size — prevent wasted API calls.
-            min_qty = self._min_qty_for(symbol)
+            min_qty = self._min_qty_for(symbol, api_key.exchange if hasattr(api_key, 'exchange') else "")
             qty = decision.sized_quantity
             if qty < min_qty:
                 msg = (

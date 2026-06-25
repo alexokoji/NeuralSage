@@ -54,13 +54,16 @@ class StatusResponse(BaseModel):
 @router.get("/status")
 async def ai_status(_: User = Depends(get_current_user)):
     from app.services.grok_client import pool_status
-    keys = pool_status()
+    groq_keys = pool_status()
+    gpt_available = bool(settings.OPENAI_API_KEY)
     return {
-        "grok_available": len(keys) > 0,
-        "model": "llama-3.3-70b-versatile (chat) / llama-3.1-8b-instant (analysis)",
-        "keys": keys,
-        "total_keys": len(keys),
-        "keys_available": sum(1 for k in keys if k["available"]),
+        "grok_available": len(groq_keys) > 0,
+        "gpt_available": gpt_available,
+        "primary_provider": "gpt" if gpt_available else "groq" if groq_keys else "none",
+        "model": "gpt-4.1-mini (analysis) + groq/llama (suggestions)" if gpt_available else "llama-3.3-70b-versatile",
+        "groq_keys": groq_keys,
+        "total_keys": len(groq_keys) + (1 if gpt_available else 0),
+        "keys_available": sum(1 for k in groq_keys if k["available"]) + (1 if gpt_available else 0),
     }
 
 
@@ -177,7 +180,6 @@ async def generate_strategy(
     Body: { "description": "I want a strategy that...", "risk_level": "low|medium|high", "timeframe": "5m" }
     Returns: { "name": "...", "rules": {...}, "params": {...}, "explanation": "..." }
     """
-    from app.services.grok_client import GrokClient, GrokError, GrokUnavailableError
     import json
 
     description = body.get("description", "")
@@ -188,10 +190,18 @@ async def generate_strategy(
         from fastapi import HTTPException
         raise HTTPException(400, "description is required")
 
+    from app.services.openai_client import GPTClient, GPTError, GPTUnavailableError
+    from app.services.grok_client import GrokClient, GrokError, GrokUnavailableError
+
+    is_gpt = False
     try:
-        client = GrokClient()
-    except GrokUnavailableError:
-        return {"error": "AI not configured — add GROQ_API_KEY"}
+        client = GPTClient()
+        is_gpt = True
+    except GPTUnavailableError:
+        try:
+            client = GrokClient()
+        except GrokUnavailableError:
+            return {"error": "AI not configured — add OPENAI_API_KEY or GROQ_API_KEY"}
 
     prompt = f"""Create a trading strategy based on this description:
 "{description}"
@@ -248,7 +258,7 @@ Rules:
             max_tokens=1024,
         )
         return result
-    except GrokError as exc:
+    except (GrokError, GPTError) as exc:
         return {"error": f"AI generation failed: {exc}"}
 
 

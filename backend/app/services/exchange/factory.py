@@ -9,6 +9,7 @@ from app.models.api_key import ApiKey
 from app.services.exchange.base import ExchangeClient
 from app.services.exchange.bitget import BitgetClient
 from app.services.exchange.bybit import BybitClient
+from app.services.exchange.oanda import OandaClient
 
 
 def build_client(api_key_row: ApiKey) -> ExchangeClient:
@@ -36,4 +37,12 @@ def build_client(api_key_row: ApiKey) -> ExchangeClient:
         return BybitClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
     if exchange == "bitget":
         return BitgetClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
+    if exchange in ("oanda", "oanda_live"):
+        # For OANDA: api_key is the Bearer token, api_secret holds the account ID
+        is_practice = exchange == "oanda" or is_testnet
+        return OandaClient(
+            api_key=plaintext_key,
+            account_id=plaintext_secret,
+            is_practice=is_practice,
+        )
     raise ValueError(f"unsupported exchange: {exchange}")

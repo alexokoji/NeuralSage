@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_API_KEY_2: str = ""
 
+    # OpenAI GPT — premium AI analysis (paid, https://platform.openai.com)
+    # Used for market analysis, fleet insights, strategy generation.
+    # Falls back to Groq if not configured.
+    OPENAI_API_KEY: str = ""
+
     # Exchanges
     BYBIT_REST_URL: str = "https://api.bybit.com"
     BYBIT_TESTNET_REST_URL: str = "https://api-testnet.bybit.com"
@@ -64,6 +69,11 @@ class Settings(BaseSettings):
     BYBIT_WS_PUBLIC_TESTNET_URL: str = "wss://stream-testnet.bybit.com/v5/public/linear"
     BITGET_REST_URL: str = "https://api.bitget.com"
     BITGET_WS_PUBLIC_URL: str = "wss://ws.bitget.com/v2/ws/public"
+
+    # OANDA — Forex trading (https://www.oanda.com)
+    # Practice: https://api-fxpractice.oanda.com  Live: https://api-fxtrade.oanda.com
+    OANDA_REST_URL: str = "https://api-fxpractice.oanda.com"
+    OANDA_STREAM_URL: str = "https://stream-fxpractice.oanda.com"
 
     # Trading hard caps
     MAX_RISK_PER_TRADE_PCT: float = 2.0

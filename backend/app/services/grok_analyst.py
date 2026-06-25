@@ -33,7 +33,23 @@ import pandas as pd
 from loguru import logger
 
 from app.services.grok_client import GrokClient, GrokError, GrokUnavailableError
+from app.services.openai_client import GPTClient, GPTError, GPTUnavailableError
 from app.services.strategy.base import Signal, SignalAction
+
+
+def _get_premium_client() -> tuple[GPTClient | GrokClient, bool]:
+    """Get the best available AI client. Prefers GPT, falls back to Groq.
+
+    Returns (client, is_gpt) tuple.
+    """
+    try:
+        return GPTClient(), True
+    except GPTUnavailableError:
+        pass
+    try:
+        return GrokClient(), False
+    except GrokUnavailableError:
+        raise GrokUnavailableError("No AI provider configured (need OPENAI_API_KEY or GROQ_API_KEY)")
 
 
 # ------------------------------------------------------------------ #
@@ -123,9 +139,8 @@ async def analyse_market(
     when the signal is an entry — we never enter without AI approval.
     """
     try:
-        client = GrokClient()
+        client, is_gpt = _get_premium_client()
     except GrokUnavailableError:
-        # No AI available — only allow entries with very high strategy confidence
         if signal.action in ("enter_long", "enter_short") and signal.confidence < 0.80:
             return Signal("hold", 0.3, "AI unavailable — holding (confidence too low for unvalidated entry)")
         return signal
@@ -224,7 +239,7 @@ CRITICAL RULES:
         result = await client.chat_json(
             [{"role": "user", "content": prompt}],
             system=_TRADING_SYSTEM,
-            mini=False,  # use the FULL model for analysis — this is the critical decision
+            mini=False,
         )
         action: SignalAction = result.get("action", "hold")
         if action not in ("enter_long", "enter_short", "exit", "hold"):
@@ -237,17 +252,17 @@ CRITICAL RULES:
         if structure:
             reason = f"[{structure}] {reason}"
 
+        ai_label = "GPT" if is_gpt else "AI"
         return Signal(
             action=action,
             confidence=confidence,
-            reason=f"[AI] {reason}",
+            reason=f"[{ai_label}] {reason}",
             suggested_stop_loss_pct=result.get("suggested_stop_loss_pct") or signal.suggested_stop_loss_pct,
             suggested_take_profit_pct=result.get("suggested_take_profit_pct") or signal.suggested_take_profit_pct,
-            metadata={**(signal.metadata or {}), "ai_analysed": True, "market_structure": structure},
+            metadata={**(signal.metadata or {}), "ai_analysed": True, "ai_provider": "gpt" if is_gpt else "groq", "market_structure": structure},
         )
-    except GrokError as exc:
+    except (GrokError, GPTError) as exc:
         logger.warning("AI market analysis failed: {}", exc)
-        # Without AI approval, only allow very high confidence entries
         if signal.action in ("enter_long", "enter_short") and signal.confidence < 0.80:
             return Signal("hold", 0.3, f"AI unavailable ({exc}) — holding (no unvalidated entries)")
         return signal
@@ -329,9 +344,9 @@ async def fleet_insight(
     if not observations:
         return "No fleet observations available yet."
     try:
-        client = GrokClient()
+        client, is_gpt = _get_premium_client()
     except GrokUnavailableError:
-        return "Grok AI is not configured — fleet insights unavailable."
+        return "AI is not configured — fleet insights unavailable."
 
     obs_text = json.dumps(observations[:10], indent=2)
     scope = f"{strategy_type}" + (f" on {symbol}" if symbol else " (all symbols)")
@@ -349,8 +364,8 @@ Write a 2–4 sentence summary (plain text, no markdown) covering:
             [{"role": "user", "content": prompt}],
             system=_TRADING_SYSTEM,
         )
-    except GrokError as exc:
-        logger.warning("Grok fleet insight failed: {}", exc)
+    except (GrokError, GPTError) as exc:
+        logger.warning("fleet insight failed: {}", exc)
         return "Fleet insight temporarily unavailable."
 
 
@@ -453,3 +468,54 @@ async def chat(
     except GrokError as exc:
         logger.warning("Grok chat failed: {}", exc)
         return "I'm having trouble reaching the AI service right now. Please try again shortly."
+
+
+async def nudge_stuck_agent(
+    agent_data: dict[str, Any],
+    last_signals: list[str],
+    market_summary: str = "",
+) -> dict[str, Any] | None:
+    """Called by the trading engine when an agent hasn't placed a trade in many ticks.
+
+    Uses Groq (lightweight) to diagnose why and suggest a fix. Returns a dict
+    with keys: diagnosis, action, suggested_params, or None on failure.
+    """
+    try:
+        client = GrokClient()
+    except GrokUnavailableError:
+        return None
+
+    prompt = f"""An AI trading agent has been running but hasn't placed any trades recently.
+Diagnose why and suggest what to change.
+
+Agent config:
+{json.dumps(agent_data, indent=2)}
+
+Last 20 signal results: {json.dumps(last_signals)}
+
+{f"Market context: {market_summary}" if market_summary else ""}
+
+Respond with a JSON object:
+{{
+  "diagnosis": "<1-2 sentence explanation of why the agent isn't trading>",
+  "action": "<one of: lower_confidence_threshold, widen_entry_criteria, change_timeframe, switch_strategy, wait_for_setup, none>",
+  "suggested_params": {{<specific param changes to make, or empty dict>}},
+  "urgency": "<low|medium|high>"
+}}
+
+Common causes:
+- Confidence threshold too high (min_confidence > 0.65 is very restrictive)
+- Wrong timeframe for the strategy (scalping on 4h, trend-following on 1m)
+- Market is ranging but strategy needs trending conditions
+- Stop loss too tight causing constant rejections
+- All signals are "hold" because AI is being too conservative
+"""
+    try:
+        return await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system=_TRADING_SYSTEM,
+            mini=True,
+        )
+    except GrokError as exc:
+        logger.warning("stuck agent nudge failed: {}", exc)
+        return None

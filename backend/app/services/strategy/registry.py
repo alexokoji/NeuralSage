@@ -17,9 +17,17 @@ STRATEGIES: dict[str, Strategy] = {
 }
 
 
+_FOREX_MAP = {
+    "forex_ema_trend": "ema_crossover",
+    "forex_rsi_reversal": "rsi_entry",
+}
+
+
 def get_strategy(strategy_type: str) -> Strategy:
     if strategy_type in STRATEGIES:
         return STRATEGIES[strategy_type]
+    if strategy_type in _FOREX_MAP:
+        return STRATEGIES[_FOREX_MAP[strategy_type]]
     if strategy_type.startswith("composite_"):
         return STRATEGIES["composite"]
     raise KeyError(f"unknown strategy: {strategy_type}")
