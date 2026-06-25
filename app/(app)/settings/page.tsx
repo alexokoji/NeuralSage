@@ -109,7 +109,8 @@ export default function SettingsPage() {
         passphrase: '',
       });
     } catch (exc) {
-      setFormError((exc as Error).message);
+      const msg = (exc as Error).message;
+      setFormError(typeof msg === 'string' ? msg : JSON.stringify(msg));
     } finally {
       setSubmitting(false);
     }

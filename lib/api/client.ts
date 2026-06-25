@@ -94,7 +94,8 @@ async function request<T>(
   const text = await resp.text();
   const data = text ? JSON.parse(text) : null;
   if (!resp.ok) {
-    const detail = (data && (data.detail as string)) || resp.statusText;
+    const raw = data && data.detail;
+    const detail = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : resp.statusText;
     throw new ApiError(resp.status, detail);
   }
   return data as T;
