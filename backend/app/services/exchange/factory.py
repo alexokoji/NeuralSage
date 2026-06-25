@@ -9,7 +9,7 @@ from app.models.api_key import ApiKey
 from app.services.exchange.base import ExchangeClient
 from app.services.exchange.bitget import BitgetClient
 from app.services.exchange.bybit import BybitClient
-from app.services.exchange.metaapi import MetaApiClient
+from app.services.exchange.deriv import DerivClient
 
 
 def build_client(api_key_row: ApiKey) -> ExchangeClient:
@@ -37,11 +37,11 @@ def build_client(api_key_row: ApiKey) -> ExchangeClient:
         return BybitClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
     if exchange == "bitget":
         return BitgetClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
-    if exchange in ("mt5", "mt5_live"):
-        is_demo = exchange == "mt5" or is_testnet
-        return MetaApiClient(
-            auth_token=plaintext_key,
-            account_id=plaintext_secret,
+    if exchange in ("deriv", "deriv_live"):
+        is_demo = exchange == "deriv" or is_testnet
+        return DerivClient(
+            api_token=plaintext_key,
+            app_id=plaintext_secret,
             is_demo=is_demo,
         )
     raise ValueError(f"unsupported exchange: {exchange}")

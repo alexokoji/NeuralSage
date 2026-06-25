@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ExchangeName = Literal["bybit", "bitget", "bybit_testnet", "mt5", "mt5_live"]
+ExchangeName = Literal["bybit", "bitget", "bybit_testnet", "deriv", "deriv_live"]
 PermissionName = Literal["read", "trade"]
 
 

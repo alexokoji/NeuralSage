@@ -9,13 +9,13 @@ from app.services.exchange.base import (
     Candle,
 )
 from app.services.exchange.factory import build_client
-from app.services.exchange.metaapi import MetaApiClient
+from app.services.exchange.deriv import DerivClient
 
 __all__ = [
     "ExchangeClient",
     "ExchangeError",
     "InsufficientPermissions",
-    "MetaApiClient",
+    "DerivClient",
     "OrderRequest",
     "OrderResult",
     "Ticker",

@@ -52,7 +52,7 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
     from app.core.encryption import decrypt_packed
     from app.services.exchange.bybit import BybitClient
     from app.services.exchange.bitget import BitgetClient
-    from app.services.exchange.metaapi import MetaApiClient
+    from app.services.exchange.deriv import DerivClient
 
     try:
         aad = str(row.user_id).encode()
@@ -63,11 +63,11 @@ async def verify_key(key_id: uuid.UUID, user: User = Depends(get_current_user)):
             client = BybitClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
         elif row.exchange == "bitget":
             client = BitgetClient(plaintext_key, plaintext_secret, is_testnet=is_testnet)
-        elif row.exchange in ("mt5", "mt5_live"):
-            is_demo = row.exchange == "mt5" or is_testnet
-            client = MetaApiClient(
-                auth_token=plaintext_key,
-                account_id=plaintext_secret,
+        elif row.exchange in ("deriv", "deriv_live"):
+            is_demo = row.exchange == "deriv" or is_testnet
+            client = DerivClient(
+                api_token=plaintext_key,
+                app_id=plaintext_secret,
                 is_demo=is_demo,
             )
         else:

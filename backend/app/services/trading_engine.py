@@ -260,7 +260,7 @@ class TradingEngine:
 
     @classmethod
     def _min_qty_for(cls, symbol: str, exchange: str = "") -> float:
-        if exchange.startswith("mt5"):
+        if exchange.startswith("deriv"):
             return cls._FOREX_MIN_QTY
         for prefix, min_q in cls._MIN_QTY.items():
             if symbol.upper().startswith(prefix):

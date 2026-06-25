@@ -1,7 +1,7 @@
 // Types mirror the backend Pydantic schemas in backend/app/schemas/.
 // Keep these in sync if you change the backend models.
 
-export type Exchange = 'bybit' | 'bitget' | 'bybit_testnet' | 'mt5' | 'mt5_live';
+export type Exchange = 'bybit' | 'bitget' | 'bybit_testnet' | 'deriv' | 'deriv_live';
 export type Permission = 'read' | 'trade';
 export type AgentStatus = 'idle' | 'active' | 'paused' | 'stopped' | 'error';
 export type StrategyType = 'ema_crossover' | 'rsi_entry' | 'breakout' | 'micro_scalping';

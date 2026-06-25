@@ -445,7 +445,7 @@ const FOREX_MARKETS = [
 ];
 
 function getMarketsForExchange(exchange: string): string[] {
-  if (exchange.startsWith('mt5')) return FOREX_MARKETS;
+  if (exchange.startsWith('deriv')) return FOREX_MARKETS;
   return CRYPTO_MARKETS;
 }
 
@@ -560,7 +560,7 @@ export default function AgentsPage() {
         api_key_id: form.api_key_id,
         strategy_id: form.strategy_id,
         assigned_capital: form.capital,
-        currency: apiKeys?.find(k => k.id === form.api_key_id)?.exchange.startsWith('mt5') ? 'USD' : 'USDT',
+        currency: apiKeys?.find(k => k.id === form.api_key_id)?.exchange.startsWith('deriv') ? 'USD' : 'USDT',
         trading_pairs: form.pairs,
         timeframe: form.timeframe,
         max_risk_per_trade: form.riskPct,
