@@ -11,14 +11,7 @@ class NotificationPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    type: Literal[
-        "trade_opened",
-        "trade_closed",
-        "risk_alert",
-        "agent_stopped",
-        "profit_target",
-        "system",
-    ]
+    type: str
     title: str
     message: str
     data: dict[str, Any]
