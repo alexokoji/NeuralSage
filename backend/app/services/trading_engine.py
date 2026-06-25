@@ -152,12 +152,20 @@ class TradingEngine:
                     data={"agent_id": str(agent.id), "trigger": "daily_profit_protect"},
                 )
 
-        # --- AI win-rate watchdog: if win rate is poor, force a study break ---
+        # --- Auto-clear recovery mode after 2 hours to prevent deadlock ---
+        if agent.recovery_mode and agent.last_trade_at:
+            recovery_age = (now - agent.last_trade_at.replace(tzinfo=timezone.utc) if agent.last_trade_at.tzinfo is None else now - agent.last_trade_at).total_seconds()
+            if recovery_age > 7200:
+                agent.recovery_mode = False
+                logger.info("agent {} recovery mode auto-cleared after 2h", agent.id)
+
+        # --- AI win-rate watchdog: if win rate is poor, force ONE study break ---
+        # Only triggers once per session — after cooldown ends the agent gets a fresh start
         total_t = agent.total_trades or 0
-        if total_t >= 5:
+        if total_t >= 8:
             win_rate = (agent.winning_trades or 0) / total_t
             pnl = float(agent.total_pnl or 0)
-            if win_rate < 0.35 and pnl < 0 and not agent.cooldown_until and not agent.winding_down:
+            if win_rate < 0.30 and pnl < 0 and not agent.cooldown_until and not agent.winding_down and not agent.recovery_mode:
                 agent.winding_down = True
                 agent.last_error = f"AI watchdog: win rate {win_rate:.0%} — winding down open trades"
                 await agent.save()
@@ -382,8 +390,13 @@ class TradingEngine:
             if getattr(agent, "winding_down", False):
                 return
 
-            # In protect mode, only accept very high confidence trades
-            min_conf = 0.80 if agent.protect_mode else 0.55
+            # Confidence thresholds by mode
+            if agent.protect_mode:
+                min_conf = 0.75
+            elif agent.recovery_mode:
+                min_conf = 0.60
+            else:
+                min_conf = 0.55
             if signal.confidence < min_conf:
                 mode_label = "protect mode" if agent.protect_mode else "standard"
                 agent.last_error = f"signal rejected ({mode_label}): confidence {signal.confidence:.2f} < {min_conf}"
