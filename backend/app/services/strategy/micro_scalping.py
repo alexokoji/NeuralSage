@@ -76,4 +76,8 @@ class MicroScalpingStrategy(Strategy):
                     suggested_take_profit_pct=params["profit_target_pct"],
                     metadata=meta,
                 )
-        return Signal("hold", 0.4, f"deviation {deviation:.3f}% < threshold {threshold}%", metadata=meta)
+        # Scale hold confidence by how close we are to the threshold
+        # so the AI gets called on near-miss situations
+        proximity = abs(deviation) / max(threshold, 0.01)
+        hold_conf = min(0.50, 0.35 + proximity * 0.15)
+        return Signal("hold", hold_conf, f"deviation {deviation:.3f}% (threshold {threshold}%)", metadata=meta)

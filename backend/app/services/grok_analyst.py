@@ -140,7 +140,9 @@ async def analyse_market(
     """
     try:
         client, is_gpt = _get_premium_client()
+        logger.debug("AI analysing {} via {}", symbol, "GPT" if is_gpt else "Groq")
     except GrokUnavailableError:
+        logger.warning("AI unavailable for {} — no GPT or Groq key", symbol)
         if signal.action in ("enter_long", "enter_short") and signal.confidence < 0.80:
             return Signal("hold", 0.3, "AI unavailable — holding (confidence too low for unvalidated entry)")
         return signal

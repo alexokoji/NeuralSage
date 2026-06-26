@@ -218,15 +218,13 @@ class TradingEngine:
         # Strategy screener runs as a HINT for the AI — not a gate
         screener_signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
-        # AI is the PRIMARY decision maker. Call AI when:
-        # 1. Screener found a potential opportunity (non-hold)
-        # 2. We have an open position that may need managing
-        # 3. Every 3rd tick per agent for periodic market scanning (AI finds what screener misses)
-        tick_num = agent.tick_count or 0
+        # AI is the PRIMARY analyst. Call when screener sees anything interesting
+        # or agent has an open position. Screener confidence > 0.42 means there's
+        # some market activity worth the AI's attention.
         should_call_ai = (
             screener_signal.action != "hold"
             or open_position is not None
-            or tick_num % 3 == 0
+            or screener_signal.confidence > 0.42
         )
 
         if should_call_ai:
@@ -234,30 +232,34 @@ class TradingEngine:
                 (agent.winning_trades / agent.total_trades)
                 if agent.total_trades > 0 else 0.5
             )
-            signal = await grok_analyst.analyse_market(
-                screener_signal,
-                df,
-                symbol=symbol,
-                timeframe=agent.timeframe,
-                strategy_type=strategy.type,
-                strategy_params=agent.strategy_params or {},
-                agent_context={
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "total_trades": agent.total_trades,
-                    "winning_trades": agent.winning_trades,
-                    "win_rate": f"{win_rate:.0%}",
-                    "total_pnl": float(agent.total_pnl or 0),
-                    "current_day_pnl": float(agent.current_day_pnl or 0),
-                    "confidence_score": float(agent.confidence_score or 50),
-                    "in_position": ctx.in_position,
-                    "is_protect_mode": getattr(agent, "protect_mode", False),
-                    "session_trades": getattr(agent, "session_trade_count", 0),
-                    "screener_said": screener_signal.action,
-                    "screener_confidence": screener_signal.confidence,
-                    "screener_reason": screener_signal.reason,
-                },
-            )
+            try:
+                signal = await grok_analyst.analyse_market(
+                    screener_signal,
+                    df,
+                    symbol=symbol,
+                    timeframe=agent.timeframe,
+                    strategy_type=strategy.type,
+                    strategy_params=agent.strategy_params or {},
+                    agent_context={
+                        "agent_id": str(agent.id),
+                        "agent_name": agent.name,
+                        "total_trades": agent.total_trades,
+                        "winning_trades": agent.winning_trades,
+                        "win_rate": f"{win_rate:.0%}",
+                        "total_pnl": float(agent.total_pnl or 0),
+                        "current_day_pnl": float(agent.current_day_pnl or 0),
+                        "confidence_score": float(agent.confidence_score or 50),
+                        "in_position": ctx.in_position,
+                        "is_protect_mode": getattr(agent, "protect_mode", False),
+                        "session_trades": getattr(agent, "session_trade_count", 0),
+                        "screener_said": screener_signal.action,
+                        "screener_confidence": screener_signal.confidence,
+                        "screener_reason": screener_signal.reason,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("agent {} {} AI failed: {}", agent.id, symbol, exc)
+                signal = screener_signal
         else:
             signal = screener_signal
 
