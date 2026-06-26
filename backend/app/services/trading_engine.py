@@ -138,12 +138,12 @@ class TradingEngine:
                 ):
                     candidates.append((symbol, df, screener_signal, open_position))
 
-            # Phase 2: Groq analyses ALL candidates (fast + free), picks the best
-            # Phase 3: GPT makes final decision on Groq's top pick (1 cheap call)
+            # Phase 2: Groq analyses top 5 candidates (stay within 60 RPM)
+            # Phase 3: GPT makes final decision on Groq's best pick (1 call)
             candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
 
             groq_best = None  # (symbol, df, signal, open_pos)
-            for symbol, df, screener_signal, open_position in candidates:
+            for symbol, df, screener_signal, open_position in candidates[:5]:
                 try:
                     groq_signal = await grok_analyst.groq_analyse(
                         screener_signal, df,
