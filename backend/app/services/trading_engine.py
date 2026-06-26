@@ -285,7 +285,7 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
-            min_conf = 0.70 if agent.protect_mode else 0.50
+            min_conf = 0.60 if agent.protect_mode else 0.40
             if signal.confidence < min_conf:
                 agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf}"
                 return

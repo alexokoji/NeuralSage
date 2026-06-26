@@ -16,13 +16,13 @@ from app.services.strategy.indicators import ema
 class MicroScalpingStrategy(Strategy):
     type = "micro_scalping"
     default_params: dict[str, Any] = {
-        "ema_period": 8,
-        "deviation_pct": 0.12,
-        "profit_target_pct": 0.25,
-        "stop_loss_pct": 0.15,
-        "max_trades_per_hour": 10,
+        "ema_period": 5,
+        "deviation_pct": 0.06,
+        "profit_target_pct": 0.15,
+        "stop_loss_pct": 0.10,
+        "max_trades_per_hour": 15,
         "position_size_pct": 1.5,
-        "min_confidence": 0.50,
+        "min_confidence": 0.45,
     }
 
     def evaluate(self, candles: pd.DataFrame, params: dict[str, Any], ctx: StrategyContext) -> Signal:
