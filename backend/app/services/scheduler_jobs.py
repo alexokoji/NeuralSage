@@ -250,6 +250,53 @@ async def check_missed_rollover() -> None:
     else:
         logger.info("daily rollover already ran today ({} snapshots)", existing)
 
+    # Refresh strategy params for all agents to pick up latest defaults
+    await _refresh_agent_strategy_params()
+
+
+async def _refresh_agent_strategy_params() -> None:
+    """Push latest strategy default_params into existing agents.
+
+    Agents store strategy_params in the DB. When we update default_params in code,
+    existing agents keep the old values. This merges new defaults under agent overrides.
+    """
+    from app.services.strategy import get_strategy
+
+    agents = await Agent.find_all().to_list()
+    updated = 0
+    for agent in agents:
+        if not agent.strategy or not agent.strategy.type:
+            continue
+        try:
+            strat = get_strategy(agent.strategy.type)
+        except KeyError:
+            continue
+
+        new_defaults = dict(strat.default_params or {})
+        current = dict(agent.strategy_params or {})
+
+        # Only update params that the agent hasn't explicitly customized
+        # (i.e., params that still match the OLD defaults or are missing)
+        merged = {**new_defaults, **current}
+
+        # Force-update critical screener params if they're too conservative
+        if agent.strategy.type == "micro_scalping":
+            if float(merged.get("deviation_pct", 1)) > 0.10:
+                merged["deviation_pct"] = new_defaults.get("deviation_pct", 0.06)
+            if float(merged.get("min_confidence", 1)) > 0.50:
+                merged["min_confidence"] = new_defaults.get("min_confidence", 0.45)
+            if int(merged.get("ema_period", 99)) > 6:
+                merged["ema_period"] = new_defaults.get("ema_period", 5)
+
+        if merged != current:
+            agent.strategy_params = merged
+            await agent.save()
+            updated += 1
+            logger.info("agent {} params refreshed: {}", agent.name, merged)
+
+    if updated:
+        logger.info("refreshed strategy params for {} agent(s)", updated)
+
 
 async def run_daily_rollover() -> dict:
     snapshots = 0
