@@ -138,29 +138,56 @@ class TradingEngine:
                 ):
                     candidates.append((symbol, df, screener_signal, open_position))
 
-            # Phase 2: Send top candidates to AI (limit to 3 per tick to save credits)
-            # Sort by: non-hold first, then by confidence descending
+            # Phase 2: Groq analyses ALL candidates (fast + free), picks the best
+            # Phase 3: GPT makes final decision on Groq's top pick (1 cheap call)
             candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
-            ai_budget = 3
 
-            for symbol, df, screener_signal, open_position in candidates[:ai_budget]:
+            groq_best = None  # (symbol, df, signal, open_pos)
+            for symbol, df, screener_signal, open_position in candidates:
                 try:
-                    await self._tick_symbol_ai(agent, api_key, strategy, client, symbol, df, screener_signal, open_position)
-                    sig = agent.last_signal or "hold"
-                    if sig != "hold":
-                        signals_summary.append(f"{symbol}:{sig}")
+                    groq_signal = await grok_analyst.groq_analyse(
+                        screener_signal, df,
+                        symbol=symbol, timeframe=agent.timeframe,
+                        strategy_type=strategy.type,
+                        strategy_params=agent.strategy_params or {},
+                        agent_context={
+                            "agent_name": agent.name,
+                            "total_trades": agent.total_trades,
+                            "winning_trades": agent.winning_trades,
+                            "total_pnl": float(agent.total_pnl or 0),
+                            "current_day_pnl": float(agent.current_day_pnl or 0),
+                            "in_position": open_position is not None,
+                            "screener_said": screener_signal.action,
+                            "screener_confidence": screener_signal.confidence,
+                        },
+                    )
+                    if groq_signal.action in ("enter_long", "enter_short", "exit"):
+                        if groq_best is None or groq_signal.confidence > groq_best[2].confidence:
+                            groq_best = (symbol, df, groq_signal, open_position)
                 except Exception as exc:
-                    agent.last_error = f"{symbol}: {exc}"
-                    logger.warning("agent {} {}: AI tick error — {}", agent.id, symbol, exc)
+                    logger.debug("agent {} {} Groq analysis failed: {}", agent.id, symbol, exc)
 
-            # For remaining candidates beyond budget, use screener signal directly
-            for symbol, df, screener_signal, open_position in candidates[ai_budget:]:
-                if screener_signal.action in ("enter_long", "enter_short") and screener_signal.confidence >= 0.55:
-                    try:
-                        await self._execute_signal(agent, api_key, client, symbol, df, screener_signal, open_position)
-                        signals_summary.append(f"{symbol}:{screener_signal.action}")
-                    except Exception:
-                        pass
+            # Phase 3: GPT final decision on Groq's best pick
+            if groq_best:
+                symbol, df, groq_signal, open_position = groq_best
+                try:
+                    final_signal = await grok_analyst.gpt_decide(
+                        groq_signal, df,
+                        symbol=symbol, timeframe=agent.timeframe,
+                        agent_name=agent.name,
+                    )
+                    agent.last_signal = final_signal.action
+                    agent.last_signal_symbol = symbol
+                    await self._execute_signal(agent, api_key, client, symbol, df, final_signal, open_position)
+                    if final_signal.action != "hold":
+                        signals_summary.append(f"{symbol}:{final_signal.action}")
+                except Exception as exc:
+                    logger.warning("agent {} GPT decision failed: {} — using Groq signal", agent.id, exc)
+                    agent.last_signal = groq_signal.action
+                    agent.last_signal_symbol = symbol
+                    await self._execute_signal(agent, api_key, client, symbol, df, groq_signal, open_position)
+                    if groq_signal.action != "hold":
+                        signals_summary.append(f"{symbol}:{groq_signal.action}")
 
         finally:
             await client.close()

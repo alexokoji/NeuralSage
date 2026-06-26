@@ -288,6 +288,131 @@ RULES:
 validate_signal = analyse_market
 
 
+async def groq_analyse(
+    signal: Signal,
+    candles: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str,
+    strategy_type: str,
+    strategy_params: dict[str, Any],
+    agent_context: dict[str, Any] | None = None,
+) -> Signal:
+    """Groq does the heavy market analysis (fast + free).
+
+    Returns a Signal with Groq's recommendation. This is the workhorse —
+    called on every candidate symbol.
+    """
+    try:
+        client = GrokClient()
+    except GrokUnavailableError:
+        return signal
+
+    candle_text = _summarise_candles(candles, n=20)
+    indicator_text = _indicator_summary(candles)
+    agent_ctx = agent_context or {}
+
+    prompt = f"""Analyse this market and decide whether to trade.
+
+Symbol: {symbol} | Timeframe: {timeframe}
+{candle_text}
+Indicators: {indicator_text}
+Strategy screener says: {signal.action} (confidence: {signal.confidence:.2f}) — {signal.reason}
+Agent: {json.dumps(agent_ctx)}
+
+Look at momentum, EMA positions, price action. Is there a clear entry or exit?
+For scalping ({timeframe}): look for quick mean-reversion or momentum entries with tight stops.
+
+Output JSON:
+{{"action": "<enter_long|enter_short|exit|hold>", "confidence": <0.3-0.90>, "reason": "<1-2 sentences>", "suggested_stop_loss_pct": <float>, "suggested_take_profit_pct": <float>}}
+"""
+    try:
+        result = await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system=_TRADING_SYSTEM,
+            mini=True,
+        )
+        action = result.get("action", "hold")
+        if action not in ("enter_long", "enter_short", "exit", "hold"):
+            action = "hold"
+        confidence = max(0.3, min(0.90, float(result.get("confidence", 0.4))))
+        return Signal(
+            action=action,
+            confidence=confidence,
+            reason=f"[Groq] {result.get('reason', '')}",
+            suggested_stop_loss_pct=result.get("suggested_stop_loss_pct") or signal.suggested_stop_loss_pct,
+            suggested_take_profit_pct=result.get("suggested_take_profit_pct") or signal.suggested_take_profit_pct,
+            metadata={**(signal.metadata or {}), "ai_provider": "groq"},
+        )
+    except GrokError as exc:
+        logger.debug("Groq analysis failed for {}: {}", symbol, exc)
+        return signal
+
+
+async def gpt_decide(
+    groq_signal: Signal,
+    candles: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str,
+    agent_name: str,
+) -> Signal:
+    """GPT makes the final approve/reject decision on Groq's best pick.
+
+    This is a cheap, focused call — GPT only sees the summary, not raw candles.
+    Called at most once per agent per tick.
+    """
+    try:
+        client = GPTClient()
+    except GPTUnavailableError:
+        return groq_signal
+
+    last_5 = candles.tail(5)[["open", "high", "low", "close"]].round(4).to_string()
+
+    prompt = f"""Groq AI analysed {symbol} on {timeframe} and recommends: {groq_signal.action} (confidence: {groq_signal.confidence:.2f})
+Groq's reasoning: {groq_signal.reason}
+SL: {groq_signal.suggested_stop_loss_pct}% | TP: {groq_signal.suggested_take_profit_pct}%
+
+Last 5 candles:
+{last_5}
+
+Agent: {agent_name}
+
+Do you APPROVE or REJECT this trade? Consider:
+1. Does the reasoning make sense given the candle data?
+2. Is the risk/reward acceptable?
+3. Is this a good entry point or are we chasing?
+
+Output JSON: {{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1 sentence>"}}
+"""
+    try:
+        result = await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system="You are a senior trading risk manager. Approve good setups, reject bad ones. Be decisive.",
+            max_tokens=200,
+        )
+        decision = result.get("decision", "reject")
+        reason = result.get("reason", "")
+        gpt_conf = float(result.get("confidence", 0.5))
+
+        if decision == "approve":
+            logger.info("GPT APPROVED {} {} (conf {:.2f}): {}", symbol, groq_signal.action, gpt_conf, reason)
+            return Signal(
+                action=groq_signal.action,
+                confidence=gpt_conf,
+                reason=f"[GPT approved] {reason} | [Groq] {groq_signal.reason}",
+                suggested_stop_loss_pct=groq_signal.suggested_stop_loss_pct,
+                suggested_take_profit_pct=groq_signal.suggested_take_profit_pct,
+                metadata={**(groq_signal.metadata or {}), "ai_provider": "gpt+groq", "gpt_decision": "approve"},
+            )
+        else:
+            logger.info("GPT REJECTED {} {} (conf {:.2f}): {}", symbol, groq_signal.action, gpt_conf, reason)
+            return Signal("hold", 0.3, f"[GPT rejected] {reason}", metadata={"gpt_decision": "reject"})
+    except GPTError as exc:
+        logger.warning("GPT decision failed: {} — using Groq signal", exc)
+        return groq_signal
+
+
 async def suggest_params(
     strategy_type: str,
     candles: pd.DataFrame,
