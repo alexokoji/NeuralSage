@@ -56,6 +56,13 @@ class TradingEngine:
             await agent.save()
             return {"skipped": True, "reason": str(exc)}
 
+        # --- Auto-clean: remove crypto pairs from forex agents and vice versa ---
+        if self._is_forex(api_key.exchange):
+            clean_pairs = [p for p in (agent.trading_pairs or []) if not p.endswith("USDT")]
+            if len(clean_pairs) != len(agent.trading_pairs or []):
+                agent.trading_pairs = clean_pairs or ["EURUSD"]
+                logger.info("agent {} cleaned crypto pairs from forex agent: {}", agent.id, agent.trading_pairs)
+
         # --- Daily profit protection (resets every day via rollover) ---
         capital = float(agent.assigned_capital or 0)
         if capital > 0:
