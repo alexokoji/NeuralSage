@@ -82,18 +82,86 @@ class TradingEngine:
                     data={"agent_id": str(agent.id), "trigger": "daily_profit_protect"},
                 )
 
-        # --- Scan all pairs: agent finds signals, AI decides ---
+        # --- Two-phase scan: screener filters, AI analyses top candidates ---
+        # Phase 1: Run screener on ALL symbols (free, no API calls)
+        candidates: list[tuple[str, Any, Any, Any]] = []  # (symbol, df, screener_signal, open_pos)
         signals_summary: list[str] = []
         try:
             for symbol in (agent.trading_pairs or []):
                 try:
-                    await self._tick_symbol(agent, api_key, strategy, client, symbol)
+                    raw = await client.get_candles(symbol, agent.timeframe, limit=200)
+                except ExchangeError as exc:
+                    if symbol not in self._KNOWN_UNAVAILABLE:
+                        logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
+                    continue
+                if len(raw) < 50:
+                    continue
+
+                df = candles_to_df(raw)
+                open_position = await self._open_position(agent.id, symbol)
+                last_price = float(df["close"].iloc[-1])
+
+                # Auto TP/SL for paper trades
+                if open_position is not None:
+                    open_position.current_price = last_price
+                    sl = float(open_position.stop_loss or 0)
+                    tp = float(open_position.take_profit or 0)
+                    if open_position.side == "long":
+                        hit_sl = sl > 0 and last_price <= sl
+                        hit_tp = tp > 0 and last_price >= tp
+                    else:
+                        hit_sl = sl > 0 and last_price >= sl
+                        hit_tp = tp > 0 and last_price <= tp
+                    if hit_tp:
+                        await self._close_position(agent, api_key, client, open_position, tp, "take profit hit")
+                        signals_summary.append(f"{symbol}:TP")
+                        continue
+                    if hit_sl:
+                        await self._close_position(agent, api_key, client, open_position, sl, "stop loss hit")
+                        signals_summary.append(f"{symbol}:SL")
+                        continue
+
+                ctx = StrategyContext(
+                    symbol=symbol,
+                    timeframe=agent.timeframe,
+                    in_position=open_position is not None,
+                    position_side=open_position.side if open_position else None,
+                )
+                screener_signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
+
+                # Always include: non-hold signals, open positions
+                # Conditionally include: holds with high confidence (near threshold)
+                if (
+                    screener_signal.action != "hold"
+                    or open_position is not None
+                    or screener_signal.confidence > 0.42
+                ):
+                    candidates.append((symbol, df, screener_signal, open_position))
+
+            # Phase 2: Send top candidates to AI (limit to 3 per tick to save credits)
+            # Sort by: non-hold first, then by confidence descending
+            candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
+            ai_budget = 3
+
+            for symbol, df, screener_signal, open_position in candidates[:ai_budget]:
+                try:
+                    await self._tick_symbol_ai(agent, api_key, strategy, client, symbol, df, screener_signal, open_position)
                     sig = agent.last_signal or "hold"
                     if sig != "hold":
                         signals_summary.append(f"{symbol}:{sig}")
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     agent.last_error = f"{symbol}: {exc}"
-                    logger.warning("agent {} {}: tick error — {}", agent.id, symbol, exc)
+                    logger.warning("agent {} {}: AI tick error — {}", agent.id, symbol, exc)
+
+            # For remaining candidates beyond budget, use screener signal directly
+            for symbol, df, screener_signal, open_position in candidates[ai_budget:]:
+                if screener_signal.action in ("enter_long", "enter_short") and screener_signal.confidence >= 0.55:
+                    try:
+                        await self._execute_signal(agent, api_key, client, symbol, df, screener_signal, open_position)
+                        signals_summary.append(f"{symbol}:{screener_signal.action}")
+                    except Exception:
+                        pass
+
         finally:
             await client.close()
 
@@ -162,108 +230,38 @@ class TradingEngine:
     # debug so they don't pollute logs on every tick.
     _KNOWN_UNAVAILABLE: frozenset[str] = frozenset({"TONUSDT"})
 
-    async def _tick_symbol(self, agent: Agent, api_key, strategy, client, symbol: str) -> None:
-        try:
-            raw = await client.get_candles(symbol, agent.timeframe, limit=200)
-        except ExchangeError as exc:
-            agent.last_error = f"{symbol}: market data unavailable — {exc}"
-            if symbol in self._KNOWN_UNAVAILABLE:
-                logger.debug("agent {} {}: skipped (no data source): {}", agent.id, symbol, exc)
-            else:
-                logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
-            return
-        if len(raw) < 50:
-            return
-
-        df = candles_to_df(raw)
-
-        open_position = await self._open_position(agent.id, symbol)
+    async def _tick_symbol_ai(self, agent: Agent, api_key, strategy, client, symbol: str, df, screener_signal, open_position) -> None:
+        """Process a symbol with AI analysis — called for top candidates only."""
         last_price = float(df["close"].iloc[-1])
+        win_rate = (agent.winning_trades / agent.total_trades) if agent.total_trades > 0 else 0.5
 
-        # --- Auto TP/SL: check if price hit stop loss or take profit ---
-        # The exchange handles this for live trades, but paper trades need
-        # the engine to check manually every tick.
-        if open_position is not None:
-            open_position.current_price = last_price
-            sl = float(open_position.stop_loss or 0)
-            tp = float(open_position.take_profit or 0)
-
-            if open_position.side == "long":
-                hit_sl = sl > 0 and last_price <= sl
-                hit_tp = tp > 0 and last_price >= tp
-            else:
-                hit_sl = sl > 0 and last_price >= sl
-                hit_tp = tp > 0 and last_price <= tp
-
-            if hit_tp:
-                close_price = tp
-                await self._close_position(agent, api_key, client, open_position, close_price, "take profit hit")
-                agent.last_signal = "exit"
-                agent.last_signal_symbol = f"{symbol} TP"
-                return
-            if hit_sl:
-                close_price = sl
-                await self._close_position(agent, api_key, client, open_position, close_price, "stop loss hit")
-                agent.last_signal = "exit"
-                agent.last_signal_symbol = f"{symbol} SL"
-                return
-
-        ctx = StrategyContext(
-            symbol=symbol,
-            timeframe=agent.timeframe,
-            in_position=open_position is not None,
-            position_side=open_position.side if open_position else None,
-        )
-
-        # Strategy screener runs as a HINT for the AI — not a gate
-        screener_signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
-
-        # AI is the PRIMARY analyst. Call when screener sees anything interesting
-        # or agent has an open position. Screener confidence > 0.42 means there's
-        # some market activity worth the AI's attention.
-        should_call_ai = (
-            screener_signal.action != "hold"
-            or open_position is not None
-            or screener_signal.confidence > 0.42
-        )
-
-        if should_call_ai:
-            win_rate = (
-                (agent.winning_trades / agent.total_trades)
-                if agent.total_trades > 0 else 0.5
+        try:
+            signal = await grok_analyst.analyse_market(
+                screener_signal,
+                df,
+                symbol=symbol,
+                timeframe=agent.timeframe,
+                strategy_type=strategy.type,
+                strategy_params=agent.strategy_params or {},
+                agent_context={
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "total_trades": agent.total_trades,
+                    "winning_trades": agent.winning_trades,
+                    "win_rate": f"{win_rate:.0%}",
+                    "total_pnl": float(agent.total_pnl or 0),
+                    "current_day_pnl": float(agent.current_day_pnl or 0),
+                    "in_position": open_position is not None,
+                    "is_protect_mode": getattr(agent, "protect_mode", False),
+                    "screener_said": screener_signal.action,
+                    "screener_confidence": screener_signal.confidence,
+                    "screener_reason": screener_signal.reason,
+                },
             )
-            try:
-                signal = await grok_analyst.analyse_market(
-                    screener_signal,
-                    df,
-                    symbol=symbol,
-                    timeframe=agent.timeframe,
-                    strategy_type=strategy.type,
-                    strategy_params=agent.strategy_params or {},
-                    agent_context={
-                        "agent_id": str(agent.id),
-                        "agent_name": agent.name,
-                        "total_trades": agent.total_trades,
-                        "winning_trades": agent.winning_trades,
-                        "win_rate": f"{win_rate:.0%}",
-                        "total_pnl": float(agent.total_pnl or 0),
-                        "current_day_pnl": float(agent.current_day_pnl or 0),
-                        "confidence_score": float(agent.confidence_score or 50),
-                        "in_position": ctx.in_position,
-                        "is_protect_mode": getattr(agent, "protect_mode", False),
-                        "session_trades": getattr(agent, "session_trade_count", 0),
-                        "screener_said": screener_signal.action,
-                        "screener_confidence": screener_signal.confidence,
-                        "screener_reason": screener_signal.reason,
-                    },
-                )
-            except Exception as exc:
-                logger.warning("agent {} {} AI failed: {}", agent.id, symbol, exc)
-                signal = screener_signal
-        else:
+        except Exception as exc:
+            logger.warning("agent {} {} AI failed: {}", agent.id, symbol, exc)
             signal = screener_signal
 
-        # Track what this tick produced — caller will save the agent.
         agent.last_signal = signal.action
         agent.last_signal_symbol = symbol
         agent.last_error = None
@@ -273,6 +271,12 @@ class TradingEngine:
             agent.id, symbol, signal.action, last_price, signal.confidence,
         )
 
+        await self._execute_signal(agent, api_key, client, symbol, df, signal, open_position)
+
+    async def _execute_signal(self, agent, api_key, client, symbol, df, signal, open_position) -> None:
+        """Execute a trading signal (entry, exit, or hold)."""
+        last_price = float(df["close"].iloc[-1])
+
         if signal.action == "hold":
             return
 
@@ -281,10 +285,9 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
-            # In protect mode (hit daily target), require higher confidence
             min_conf = 0.70 if agent.protect_mode else 0.50
             if signal.confidence < min_conf:
-                agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf} ({'protect' if agent.protect_mode else 'normal'})"
+                agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf}"
                 return
 
             side: str = "long" if signal.action == "enter_long" else "short"
