@@ -236,11 +236,27 @@ RULES:
 - An agent that never trades never learns. Find the opportunities.
 """
     try:
-        result = await client.chat_json(
-            [{"role": "user", "content": prompt}],
-            system=_TRADING_SYSTEM,
-            mini=False,
-        )
+        try:
+            result = await client.chat_json(
+                [{"role": "user", "content": prompt}],
+                system=_TRADING_SYSTEM,
+                mini=False,
+            )
+        except GPTError as gpt_exc:
+            if "429" in str(gpt_exc) or "rate limit" in str(gpt_exc).lower():
+                try:
+                    groq_client = GrokClient()
+                    logger.debug("GPT rate-limited for {} — falling back to Groq", symbol)
+                    result = await groq_client.chat_json(
+                        [{"role": "user", "content": prompt}],
+                        system=_TRADING_SYSTEM,
+                        mini=False,
+                    )
+                    is_gpt = False
+                except GrokUnavailableError:
+                    raise gpt_exc
+            else:
+                raise
         action: SignalAction = result.get("action", "hold")
         if action not in ("enter_long", "enter_short", "exit", "hold"):
             action = "hold"
