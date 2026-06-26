@@ -72,12 +72,14 @@ const statusConfig = {
   },
 } as const;
 
-function timeAgo(iso: string | null): string {
+function formatWAT(iso: string | null): string {
   if (!iso) return 'never';
-  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  return `${Math.floor(secs / 3600)}h ago`;
+  return new Date(iso).toLocaleTimeString('en-NG', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: 'Africa/Lagos',
+  });
 }
 
 const signalColors: Record<string, string> = {
@@ -212,6 +214,11 @@ function AgentCard({
             value: `${isProfitable ? '+' : ''}$${Number(agent.total_pnl).toFixed(1)}`,
             color: isProfitable ? 'text-profit' : 'text-loss',
           },
+          {
+            label: "Today's P&L",
+            value: `${Number(agent.current_day_pnl) >= 0 ? '+' : ''}$${Number(agent.current_day_pnl || 0).toFixed(2)}`,
+            color: Number(agent.current_day_pnl || 0) >= 0 ? 'text-profit' : 'text-loss',
+          },
           { label: 'Win Rate', value: `${winRate}%`, color: 'text-foreground' },
           { label: 'Trades', value: String(agent.total_trades), color: 'text-foreground' },
         ].map(({ label, value, color }) => (
@@ -256,46 +263,18 @@ function AgentCard({
       </div>
 
       {/* Agent state banner */}
-      {agent.winding_down && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg animate-slide-up">
-          <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-          <span className="text-[10px] text-amber-400 font-medium">Winding down — letting open trades finish before study break</span>
-        </div>
-      )}
-      {agent.cooldown_until && !agent.winding_down && new Date(agent.cooldown_until) > new Date() && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg animate-slide-up">
-          <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-          <span className="text-[10px] text-blue-400 font-medium">
-            Studying fleet data — resumes in {Math.max(1, Math.ceil((new Date(agent.cooldown_until).getTime() - Date.now()) / 60000))}m
-          </span>
-        </div>
-      )}
-      {agent.protect_mode && !agent.winding_down && (
+      {agent.protect_mode && (
         <div className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg animate-slide-up">
           <Shield className="w-3 h-3 text-emerald-400" />
-          <span className="text-[10px] text-emerald-400 font-medium">Daily target hit — protecting today&apos;s gains. Resets tomorrow.</span>
-        </div>
-      )}
-      {agent.recovery_mode && !agent.winding_down && !agent.protect_mode && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-purple-500/10 border border-purple-500/20 rounded-lg animate-slide-up">
-          <div className="w-2 h-2 rounded-full bg-purple-400" />
-          <span className="text-[10px] text-purple-400 font-medium">Recovery mode — trading at half size with optimized params</span>
+          <span className="text-[10px] text-emerald-400 font-medium">Daily target hit — protecting gains (higher confidence needed). Resets tomorrow.</span>
         </div>
       )}
 
-      {/* Session progress */}
-      {agent.status === 'active' && !agent.winding_down && !agent.cooldown_until && (
-        <div className="space-y-1">
-          <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>Session progress</span>
-            <span className="font-mono">{agent.session_trade_count ?? 0}/{agent.trades_per_session ?? 10} trades</span>
-          </div>
-          <div className="h-1 bg-border rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(100, ((agent.session_trade_count ?? 0) / (agent.trades_per_session ?? 10)) * 100)}%` }}
-            />
-          </div>
+      {/* Session trades counter */}
+      {agent.status === 'active' && (
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>Session trades</span>
+          <span className="font-mono">{agent.session_trade_count ?? 0}</span>
         </div>
       )}
 
@@ -306,7 +285,7 @@ function AgentCard({
             <Activity className={cn('w-2.5 h-2.5', isAnalysing && 'animate-pulse text-green-400')} />
             {isAnalysing ? 'Analysing' : 'Last scan'}
           </span>
-          <span className="font-mono text-muted-foreground">{timeAgo(agent.last_tick_at)}</span>
+          <span className="font-mono text-muted-foreground">{formatWAT(agent.last_tick_at)}</span>
         </div>
         {agent.last_signal && (
           <div className="flex items-center justify-between text-[10px]">
@@ -317,7 +296,7 @@ function AgentCard({
             </span>
           </div>
         )}
-        {agent.last_error && !agent.winding_down && !agent.cooldown_until && (
+        {agent.last_error && (
           <div className="flex items-start gap-1 bg-red-500/5 border border-red-500/20 rounded-md px-2 py-1.5">
             <span className="text-[9px] text-red-400 leading-relaxed">{agent.last_error}</span>
           </div>
@@ -560,7 +539,7 @@ export default function AgentsPage() {
         api_key_id: form.api_key_id,
         strategy_id: form.strategy_id,
         assigned_capital: form.capital,
-        currency: apiKeys?.find(k => k.id === form.api_key_id)?.exchange.startsWith('deriv') ? 'USD' : 'USDT',
+        currency: (() => { const ex = apiKeys?.find(k => k.id === form.api_key_id)?.exchange || ''; return ex.startsWith('deriv') || ex.startsWith('mt5') || ex.startsWith('oanda') ? 'USD' : 'USDT'; })(),
         trading_pairs: form.pairs,
         timeframe: form.timeframe,
         max_risk_per_trade: form.riskPct,
@@ -884,8 +863,13 @@ export default function AgentsPage() {
                 <Label>Exchange Account</Label>
                 <Select
                   value={form.api_key_id}
-                  onValueChange={v => setForm(p => ({ ...p, api_key_id: v }))}
-                >
+                  onValueChange={v => {
+                    const key = apiKeys?.find(k => k.id === v);
+                    const isForex = key?.exchange.startsWith('deriv') || key?.exchange.startsWith('mt5');
+                    const defaultPairs = isForex ? ['EURUSD'] : ['BTCUSDT'];
+                    setForm(p => ({ ...p, api_key_id: v, pairs: defaultPairs }));
+                  }}
+>
                   <SelectTrigger className="bg-background border-border">
                     <SelectValue
                       placeholder={(apiKeys ?? []).length ? 'Select API key' : 'Add an API key first'}

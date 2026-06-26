@@ -40,85 +40,12 @@ class TradingEngine:
 
         now = datetime.now(timezone.utc)
 
-        # --- Winding down: no new entries, but still manage open positions ---
-        if agent.winding_down:
-            open_count = await Position.find(
-                Position.agent_id == agent.id,
-                Position.is_open == True,  # noqa: E712
-            ).count()
-            if open_count > 0:
-                # Still have open trades — keep ticking to process exit signals
-                agent.last_tick_at = now
-                agent.last_error = f"winding down: {open_count} trade(s) still open, waiting for TP/SL"
-                agent.tick_count = (agent.tick_count or 0) + 1
-                await agent.save()
-                # Continue to symbol loop so exit signals can fire
-            else:
-                # All positions closed — start cooldown
-                from datetime import timedelta
-                hours = agent.cooldown_hours or 1.0
-                agent.winding_down = False
-                agent.cooldown_until = now + timedelta(hours=hours)
-                agent.last_error = None
-                await agent.save()
-                logger.info("agent {} all positions closed — starting {:.0f}h cooldown", agent.id, hours)
-                try:
-                    await self._study_fleet_and_adapt(agent)
-                except Exception:
-                    pass
-                await NotificationService.create(
-                    user_id=agent.user_id,
-                    type="agent_status",
-                    title=f"{agent.name} all trades finished — studying for {hours:.0f}h",
-                    message=f"Open trades completed. Studying fleet data. Auto-resumes in {hours:.0f}h.",
-                    data={"agent_id": str(agent.id), "trigger": "cooldown_start"},
-                )
-                return {"skipped": True, "reason": "cooldown started after wind-down"}
-
-        # --- Session cooldown: auto-resume when time is up ---
-        if agent.cooldown_until:
-            # Handle timezone-naive datetimes from DB
-            cooldown_dt = agent.cooldown_until
-            if cooldown_dt.tzinfo is None:
-                cooldown_dt = cooldown_dt.replace(tzinfo=timezone.utc)
-
-            if now < cooldown_dt:
-                remaining = (cooldown_dt - now).total_seconds() / 60
-                agent.last_error = f"studying fleet data ({remaining:.0f}m remaining)"
-                agent.last_tick_at = now
-                await agent.save()
-                return {"skipped": True, "reason": f"cooldown ({remaining:.0f}m left)"}
-            else:
-                # Cooldown expired — auto-resume immediately
-                logger.info(
-                    "agent {} cooldown expired (was until {}, now {}) — auto-resuming",
-                    agent.id, cooldown_dt.isoformat(), now.isoformat(),
-                )
-                agent.cooldown_until = None
-                agent.session_trade_count = 0
-                agent.winding_down = False
-                agent.last_error = None
-                await agent.save()
-                try:
-                    await self._study_fleet_and_adapt(agent)
-                except Exception:
-                    pass
-                logger.info("agent {} auto-resumed after cooldown — session reset, fleet studied", agent.id)
-                await NotificationService.create(
-                    user_id=agent.user_id,
-                    type="agent_status",
-                    title=f"{agent.name} resumed trading",
-                    message="Cooldown ended. Fleet data studied. New session started.",
-                    data={"agent_id": str(agent.id), "trigger": "cooldown_end"},
-                )
-
         strategy_type = agent.strategy.type if agent.strategy else None
         if not strategy_type:
             return {"skipped": True, "reason": "agent has no strategy"}
 
         strategy = get_strategy(strategy_type)
 
-        # Record that a tick ran even if it errors out below.
         agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
 
@@ -127,60 +54,28 @@ class TradingEngine:
         except PermissionError as exc:
             agent.last_error = str(exc)
             await agent.save()
-            logger.warning("agent {}: cannot build client — {}", agent.id, exc)
             return {"skipped": True, "reason": str(exc)}
 
-        # --- Daily profit protection ---
-        # If the agent has made >= X% of capital TODAY, enter protect mode
-        # for the rest of the day. Resets at midnight via daily rollover.
+        # --- Daily profit protection (resets every day via rollover) ---
         capital = float(agent.assigned_capital or 0)
         if capital > 0:
             day_pnl_pct = (float(agent.current_day_pnl or 0) / capital) * 100
             protect_threshold = float(agent.profit_protect_pct or 15)
             if day_pnl_pct >= protect_threshold and not agent.protect_mode:
                 agent.protect_mode = True
-                agent.winding_down = True
                 logger.info(
-                    "agent {} daily profit protection: today's PnL {:.1f}% >= {:.1f}% target — winding down",
+                    "agent {} daily profit protection: today {:.1f}% >= {:.1f}% — protect mode ON",
                     agent.id, day_pnl_pct, protect_threshold,
                 )
                 await NotificationService.create(
                     user_id=agent.user_id,
                     type="agent_status",
                     title=f"{agent.name} hit daily target ({day_pnl_pct:.1f}% today)",
-                    message=f"Protecting today's gains. Letting open trades finish. Resets tomorrow.",
+                    message=f"Protecting today's gains. Higher confidence required for new entries. Resets tomorrow.",
                     data={"agent_id": str(agent.id), "trigger": "daily_profit_protect"},
                 )
 
-        # --- Auto-clear recovery mode after 2 hours to prevent deadlock ---
-        if agent.recovery_mode and agent.last_trade_at:
-            recovery_age = (now - agent.last_trade_at.replace(tzinfo=timezone.utc) if agent.last_trade_at.tzinfo is None else now - agent.last_trade_at).total_seconds()
-            if recovery_age > 7200:
-                agent.recovery_mode = False
-                logger.info("agent {} recovery mode auto-cleared after 2h", agent.id)
-
-        # --- AI win-rate watchdog: if win rate is poor, force ONE study break ---
-        # Only triggers once per session — after cooldown ends the agent gets a fresh start
-        total_t = agent.total_trades or 0
-        if total_t >= 8:
-            win_rate = (agent.winning_trades or 0) / total_t
-            pnl = float(agent.total_pnl or 0)
-            if win_rate < 0.30 and pnl < 0 and not agent.cooldown_until and not agent.winding_down and not agent.recovery_mode:
-                agent.winding_down = True
-                agent.last_error = f"AI watchdog: win rate {win_rate:.0%} — winding down open trades"
-                await agent.save()
-                logger.warning(
-                    "agent {} AI watchdog: win_rate={:.0%} pnl={:.2f} — winding down before cooldown",
-                    agent.id, win_rate, pnl,
-                )
-                await NotificationService.create(
-                    user_id=agent.user_id,
-                    type="agent_status",
-                    title=f"{agent.name} winding down (poor win rate)",
-                    message=f"Win rate {win_rate:.0%}. No new entries — letting open trades finish before study break.",
-                    data={"agent_id": str(agent.id), "trigger": "ai_watchdog"},
-                )
-
+        # --- Scan all pairs: agent finds signals, AI decides ---
         signals_summary: list[str] = []
         try:
             for symbol in (agent.trading_pairs or []):
@@ -195,7 +90,6 @@ class TradingEngine:
         finally:
             await client.close()
 
-        # Store a summary of non-hold signals so the UI shows what happened
         pairs_checked = len(agent.trading_pairs or [])
         if signals_summary:
             agent.last_error = None
@@ -205,20 +99,9 @@ class TradingEngine:
             agent.last_signal_symbol = f"scanned {pairs_checked} pairs"
             agent.last_error = None
 
-        # Stuck agent nudge: if no trades in 50+ ticks, ask Groq to diagnose
-        ticks_since_trade = (agent.tick_count or 0)
-        if agent.last_trade_at:
-            ticks_since_start = (agent.tick_count or 0)
-        else:
-            ticks_since_start = ticks_since_trade
-
-        if (
-            ticks_since_trade > 0
-            and ticks_since_trade % 50 == 0
-            and agent.session_trade_count == 0
-            and not agent.winding_down
-            and not agent.cooldown_until
-        ):
+        # Stuck agent nudge: if no trades in 50+ ticks, AI adjusts params
+        tick_count = agent.tick_count or 0
+        if tick_count > 0 and tick_count % 50 == 0 and agent.session_trade_count == 0:
             try:
                 nudge = await grok_analyst.nudge_stuck_agent(
                     agent_data={
@@ -228,27 +111,16 @@ class TradingEngine:
                         "timeframe": agent.timeframe,
                         "trading_pairs": agent.trading_pairs,
                         "total_trades": agent.total_trades,
-                        "tick_count": agent.tick_count,
+                        "tick_count": tick_count,
                     },
                     last_signals=["hold"] * 20,
                 )
                 if nudge and nudge.get("suggested_params"):
-                    old_params = dict(agent.strategy_params or {})
-                    agent.strategy_params = {**old_params, **nudge["suggested_params"]}
+                    agent.strategy_params = {**(agent.strategy_params or {}), **nudge["suggested_params"]}
                     agent.last_error = f"AI nudge: {nudge.get('diagnosis', 'adjusting params')}"
-                    logger.info(
-                        "agent {} stuck-agent nudge applied: {} → {}",
-                        agent.id, nudge.get("diagnosis"), nudge.get("suggested_params"),
-                    )
-                    await NotificationService.create(
-                        user_id=agent.user_id,
-                        type="agent_status",
-                        title=f"{agent.name} — AI adjusted params (no trades in {ticks_since_trade} ticks)",
-                        message=nudge.get("diagnosis", "Parameters adjusted to improve trade detection."),
-                        data={"agent_id": str(agent.id), "trigger": "stuck_nudge"},
-                    )
-            except Exception as exc:
-                logger.debug("stuck agent nudge failed: {}", exc)
+                    logger.info("agent {} AI nudge: {}", agent.id, nudge.get("diagnosis"))
+            except Exception:
+                pass
 
         await agent.save()
         return {"ok": True}
@@ -268,7 +140,7 @@ class TradingEngine:
 
     @classmethod
     def _min_qty_for(cls, symbol: str, exchange: str = "") -> float:
-        if exchange.startswith("deriv"):
+        if cls._is_forex(exchange):
             return cls._FOREX_MIN_QTY
         for prefix, min_q in cls._MIN_QTY.items():
             if symbol.upper().startswith(prefix):
@@ -277,7 +149,7 @@ class TradingEngine:
 
     @staticmethod
     def _is_forex(exchange: str) -> bool:
-        return exchange.startswith("mt5")
+        return exchange.startswith("mt5") or exchange.startswith("deriv") or exchange.startswith("oanda")
 
     # Symbols that persistently fail on all fallback providers — downgraded to
     # debug so they don't pollute logs on every tick.
@@ -400,25 +272,10 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
-            # Winding down — no new entries, let existing trades finish
-            if getattr(agent, "winding_down", False):
-                return
-
-            # Confidence thresholds by mode
-            if agent.protect_mode:
-                min_conf = 0.75
-            elif agent.recovery_mode:
-                min_conf = 0.60
-            else:
-                min_conf = 0.55
+            # In protect mode (hit daily target), require higher confidence
+            min_conf = 0.70 if agent.protect_mode else 0.50
             if signal.confidence < min_conf:
-                mode_label = "protect mode" if agent.protect_mode else "standard"
-                agent.last_error = f"signal rejected ({mode_label}): confidence {signal.confidence:.2f} < {min_conf}"
-                logger.debug(
-                    "agent {} {}: entry rejected (confidence {:.2f} < {:.2f}, {})",
-                    agent.id, symbol, signal.confidence, min_conf,
-                    "PROTECT" if agent.protect_mode else "normal",
-                )
+                agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf} ({'protect' if agent.protect_mode else 'normal'})"
                 return
 
             side: str = "long" if signal.action == "enter_long" else "short"
@@ -681,21 +538,6 @@ class TradingEngine:
 
         # Session trade counter — triggers wind-down after N trades
         agent.session_trade_count = (agent.session_trade_count or 0) + 1
-        max_session = agent.trades_per_session or 10
-        if agent.session_trade_count >= max_session and not agent.winding_down:
-            agent.winding_down = True
-            logger.info(
-                "agent {} completed session ({} trades) — winding down, letting open trades finish",
-                agent.id, agent.session_trade_count,
-            )
-            await NotificationService.create(
-                user_id=agent.user_id,
-                type="agent_status",
-                title=f"{agent.name} winding down ({agent.session_trade_count} trades done)",
-                message="No new entries. Waiting for open trades to reach TP/SL before study break.",
-                data={"agent_id": str(agent.id), "trigger": "session_wind_down"},
-            )
-
         await agent.save()
 
         await NotificationService.create(
@@ -794,9 +636,7 @@ class TradingEngine:
             data={"agent_id": str(agent.id), "trade_id": str(position.trade_id)},
         )
 
-        # Emergency re-optimization: if the agent just hit 3 consecutive losses,
-        # enable recovery mode immediately (so it can trade again), then try
-        # to re-optimize as best-effort.
+        # After 3 consecutive losses, AI re-optimizes params (agent keeps trading)
         if gross < 0:
             loss_streak = 0
             streak_trades = await Trade.find(
@@ -808,19 +648,11 @@ class TradingEngine:
                 else:
                     break
 
-            if loss_streak >= 3 and not agent.recovery_mode:
-                # Always enable recovery mode so the agent is unblocked
-                agent.recovery_mode = True
-                await agent.save()
-                logger.warning(
-                    "agent {} hit {} consecutive losses — recovery mode ON",
-                    agent.id, loss_streak,
-                )
-                # Try to re-optimize (best-effort — agent trades again regardless)
+            if loss_streak >= 3:
                 try:
                     await self._emergency_optimize(agent, position.symbol, loss_streak)
                 except Exception as exc:
-                    logger.warning("emergency optimize failed for {}: {} — agent will resume with current params", agent.id, exc)
+                    logger.warning("emergency optimize failed for {}: {}", agent.id, exc)
 
     async def _emergency_optimize(self, agent: Agent, symbol: str, loss_streak: int) -> None:
         """Re-optimize after consecutive losses. Agent is already in recovery_mode.
