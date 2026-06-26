@@ -23,7 +23,7 @@ from loguru import logger
 from app.config import settings
 
 _BASE_URL = "https://api.openai.com/v1"
-_DEFAULT_MODEL = "gpt-4.1-mini"
+_DEFAULT_MODEL = "gpt-4.1-nano"
 _MINI_MODEL = "gpt-4.1-nano"
 _TIMEOUT = 45.0
 _MIN_REQUEST_INTERVAL = 0.5
