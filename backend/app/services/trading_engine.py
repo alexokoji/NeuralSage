@@ -202,9 +202,9 @@ class TradingEngine:
             agent.last_signal_symbol = f"scanned {pairs_checked} pairs"
             agent.last_error = None
 
-        # Stuck agent nudge: if no trades in 50+ ticks, AI adjusts params
+        # Stuck agent nudge: every 200 ticks (~3h at 60s interval) if no trades
         tick_count = agent.tick_count or 0
-        if tick_count > 0 and tick_count % 50 == 0 and agent.session_trade_count == 0:
+        if tick_count > 0 and tick_count % 200 == 0 and agent.session_trade_count == 0:
             try:
                 nudge = await grok_analyst.nudge_stuck_agent(
                     agent_data={
