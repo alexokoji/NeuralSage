@@ -17,6 +17,7 @@ from loguru import logger
 
 from app.config import settings
 from app.services.scheduler_jobs import (
+    check_missed_rollover,
     run_daily_rollover,
     run_optimization_sweep,
     run_trading_tick_for_all_agents,
@@ -70,6 +71,14 @@ def start() -> None:
         id="keep_alive",
         max_instances=1,
         coalesce=True,
+        replace_existing=True,
+    )
+
+    # Check if daily rollover was missed (e.g. Render restart after midnight)
+    sched.add_job(
+        check_missed_rollover,
+        id="startup_rollover_check",
+        max_instances=1,
         replace_existing=True,
     )
 

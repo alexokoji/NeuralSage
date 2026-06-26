@@ -237,6 +237,20 @@ async def run_optimization_sweep() -> dict:
 # --------------------------------------------------------------------------- #
 
 
+async def check_missed_rollover() -> None:
+    """Run at startup — if today's rollover hasn't happened yet, reset daily PnL."""
+    from app.models.agent_performance import AgentPerformance
+    today = date.today()
+    existing = await AgentPerformance.find(
+        AgentPerformance.snapshot_date == today,
+    ).count()
+    if existing == 0:
+        logger.info("missed daily rollover detected — running now")
+        await run_daily_rollover()
+    else:
+        logger.info("daily rollover already ran today ({} snapshots)", existing)
+
+
 async def run_daily_rollover() -> dict:
     snapshots = 0
     today = date.today()
@@ -265,11 +279,8 @@ async def run_daily_rollover() -> dict:
         ).insert()
 
         agent.current_day_pnl = 0
-        # Reset daily protect mode so agent trades fresh tomorrow
-        if agent.protect_mode:
-            agent.protect_mode = False
-            agent.winding_down = False
-            logger.info("daily rollover: {} protect mode reset for new day", agent.name)
+        agent.protect_mode = False
+        agent.session_trade_count = 0
         await agent.save()
         snapshots += 1
 
