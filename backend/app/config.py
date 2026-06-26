@@ -76,7 +76,7 @@ class Settings(BaseSettings):
 
     # Trading hard caps
     MAX_RISK_PER_TRADE_PCT: float = 2.0
-    MAX_DAILY_DRAWDOWN_PCT: float = 5.0
+    MAX_DAILY_DRAWDOWN_PCT: float = 15.0
     MAX_CONCURRENT_TRADES: int = 5
     MAX_CONSECUTIVE_LOSSES: int = 3
     TRADE_LOOP_INTERVAL_SECONDS: int = 60
