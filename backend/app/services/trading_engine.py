@@ -189,6 +189,18 @@ class TradingEngine:
                     await self._execute_signal(agent, api_key, client, symbol, df, groq_signal, open_position)
                     if groq_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{groq_signal.action}")
+            elif candidates:
+                # AI unavailable — execute the best screener signal directly
+                best = candidates[0]
+                symbol, df, screener_signal, open_position = best
+                if screener_signal.action in ("enter_long", "enter_short") and screener_signal.confidence >= 0.50:
+                    logger.info("agent {} AI unavailable — executing screener signal {} {} (conf {:.2f})",
+                                agent.id, symbol, screener_signal.action, screener_signal.confidence)
+                    agent.last_signal = screener_signal.action
+                    agent.last_signal_symbol = f"{symbol} (no AI)"
+                    await self._execute_signal(agent, api_key, client, symbol, df, screener_signal, open_position)
+                    if screener_signal.action != "hold":
+                        signals_summary.append(f"{symbol}:{screener_signal.action}")
 
         finally:
             await client.close()
