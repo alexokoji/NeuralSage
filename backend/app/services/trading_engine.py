@@ -328,6 +328,7 @@ class TradingEngine:
             min_conf = 0.60 if agent.protect_mode else 0.40
             if signal.confidence < min_conf:
                 agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf}"
+                logger.info("agent {} {} REJECTED: confidence {:.2f} < {:.2f}", agent.id, symbol, signal.confidence, min_conf)
                 return
 
             side: str = "long" if signal.action == "enter_long" else "short"
@@ -359,14 +360,7 @@ class TradingEngine:
             )
             if not decision.approved:
                 agent.last_error = f"risk blocked: {decision.reason}"
-                await RiskEngine.log_risk_event(
-                    user_id=agent.user_id,
-                    agent_id=agent.id,
-                    event_type=decision.code if decision.code != "ok" else "api_error",
-                    severity="warning",
-                    message=decision.reason,
-                    details={"symbol": symbol, "signal": signal.__dict__},
-                )
+                logger.info("agent {} {} RISK BLOCKED: {}", agent.id, symbol, decision.reason)
                 return
 
             # Enforce exchange minimum order size — prevent wasted API calls.
@@ -389,6 +383,10 @@ class TradingEngine:
                 )
                 return
 
+            logger.info(
+                "agent {} {} OPENING TRADE: {} @ {:.4f} qty={:.6f} SL={:.3f}% TP={:.3f}%",
+                agent.id, symbol, side, last_price, qty, sl_pct, tp_pct,
+            )
             await self._open_trade(
                 agent=agent,
                 api_key=api_key,
