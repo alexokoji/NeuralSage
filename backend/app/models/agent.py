@@ -37,7 +37,7 @@ class Agent(Document):
     max_risk_per_trade: float = 2.0
     daily_profit_target: float = 3.0
     weekly_profit_target: float = 10.0
-    max_daily_loss: float = 5.0
+    max_daily_loss: float = 15.0
     max_concurrent_trades: int = 3
     max_consecutive_losses: int = 3
 

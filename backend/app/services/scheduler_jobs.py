@@ -253,6 +253,14 @@ async def check_missed_rollover() -> None:
     # Refresh strategy params for all agents to pick up latest defaults
     await _refresh_agent_strategy_params()
 
+    # Fix agents stuck with old 5% daily loss cap
+    agents = await Agent.find_all().to_list()
+    for a in agents:
+        if float(a.max_daily_loss or 0) < 15:
+            a.max_daily_loss = 15.0
+            await a.save()
+            logger.info("agent {} max_daily_loss raised to 15%", a.name)
+
 
 async def _refresh_agent_strategy_params() -> None:
     """Push latest strategy default_params into existing agents.
