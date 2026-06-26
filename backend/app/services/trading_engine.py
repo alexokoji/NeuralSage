@@ -318,8 +318,25 @@ class TradingEngine:
                 return
 
             side: str = "long" if signal.action == "enter_long" else "short"
-            sl_pct = signal.suggested_stop_loss_pct or 1.0
-            tp_pct = signal.suggested_take_profit_pct or 2.5
+
+            # Use strategy defaults for SL/TP, not AI suggestions
+            # AI can suggest tighter values but never looser than strategy defaults
+            strat_params = agent.strategy_params or {}
+            default_sl = float(strat_params.get("stop_loss_pct", 1.0))
+            default_tp = float(strat_params.get("take_profit_pct",
+                              strat_params.get("profit_target_pct", 2.5)))
+
+            ai_sl = signal.suggested_stop_loss_pct or default_sl
+            ai_tp = signal.suggested_take_profit_pct or default_tp
+
+            # SL: use the TIGHTER of strategy default and AI suggestion
+            sl_pct = min(ai_sl, default_sl)
+            # TP: use the LARGER of strategy default and AI suggestion
+            tp_pct = max(ai_tp, default_tp)
+
+            # Enforce minimum 1.5:1 reward-to-risk ratio
+            if tp_pct < sl_pct * 1.5:
+                tp_pct = round(sl_pct * 1.5, 3)
 
             decision = await RiskEngine.evaluate_entry(
                 agent,
