@@ -31,8 +31,8 @@ _BASE_URL = "https://api.groq.com/openai/v1"
 _DEFAULT_MODEL = "llama-3.3-70b-versatile"
 _MINI_MODEL = "llama-3.1-8b-instant"
 _TIMEOUT = 30.0
-_RATE_LIMIT_BACKOFF_SECONDS = 30.0
-_MIN_REQUEST_INTERVAL = 2.0
+_RATE_LIMIT_BACKOFF_SECONDS = 15.0
+_MIN_REQUEST_INTERVAL = 1.0
 
 
 class GrokError(Exception):
