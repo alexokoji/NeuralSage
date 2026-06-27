@@ -27,7 +27,11 @@ from app.services.exchange.base import ExchangeError, OrderResult
 import app.services.grok_analyst as grok_analyst
 from app.services.notifications import NotificationService
 from app.services.risk_engine import RiskEngine
-from app.services.signal_policy import get_entry_confidence_threshold, should_execute_entry_signal
+from app.services.signal_policy import (
+    get_entry_confidence_threshold,
+    should_execute_entry_signal,
+    should_prefer_screener,
+)
 from app.services.strategy import StrategyContext, get_strategy
 from app.services.strategy.indicators import candles_to_df
 
@@ -49,6 +53,8 @@ class TradingEngine:
 
         agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
+            before_total_trades = int(agent.total_trades or 0)
+            ai_used = False
 
         try:
             client = build_client(api_key)
@@ -144,7 +150,13 @@ class TradingEngine:
             # Total: 3 agents × 1 Groq + 1 GPT = 6 AI calls per tick
             candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
 
-            groq_best = None  # (symbol, df, signal, open_pos)
+            # Allow agents to prefer the raw screener if its confidence exceeds
+            # the AI's confidence by a small margin (configurable per-agent).
+            # groq_best stores: (symbol, df, screener_signal, groq_signal, open_pos)
+            groq_best = None  # (symbol, df, screener_signal, groq_signal, open_pos)
+            screener_advantage_delta = float(
+                (agent.strategy_params or {}).get("screener_advantage_delta", 0.10)
+            )
             for symbol, df, screener_signal, open_position in candidates[:1]:
                 try:
                     groq_signal = await grok_analyst.groq_analyse(
@@ -163,21 +175,30 @@ class TradingEngine:
                             "screener_confidence": screener_signal.confidence,
                         },
                     )
+                    ai_used = True
                     if groq_signal.action in ("enter_long", "enter_short", "exit"):
-                        if groq_best is None or groq_signal.confidence > groq_best[2].confidence:
-                            groq_best = (symbol, df, groq_signal, open_position)
+                        if groq_best is None or groq_signal.confidence > (groq_best[3].confidence if groq_best[3] else 0):
+                            groq_best = (symbol, df, screener_signal, groq_signal, open_position)
                 except Exception as exc:
                     logger.debug("agent {} {} Groq analysis failed: {}", agent.id, symbol, exc)
 
             # Phase 3: GPT final decision on Groq's best pick
             if groq_best:
-                symbol, df, groq_signal, open_position = groq_best
+                symbol, df, screener_signal, groq_signal, open_position = groq_best
                 try:
+                    ai_used = True
                     final_signal = await grok_analyst.gpt_decide(
                         groq_signal, df,
                         symbol=symbol, timeframe=agent.timeframe,
                         agent_name=agent.name,
                     )
+                    if should_prefer_screener(
+                        screener_signal.confidence,
+                        final_signal.confidence,
+                        screener_advantage_delta=screener_advantage_delta,
+                    ):
+                        final_signal = screener_signal
+                        ai_used = False
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
@@ -266,6 +287,18 @@ class TradingEngine:
                 pass
 
         await agent.save()
+        # Emit concise per-agent metric for observability
+        trades_opened = int(agent.total_trades or 0) - before_total_trades
+        candidates_checked = len(agent.trading_pairs or [])
+        signals_emitted = len(signals_summary)
+        logger.info(
+            "agent_metric {} candidates={} signals={} trades_opened={} ai_used={}",
+            agent.id,
+            candidates_checked,
+            signals_emitted,
+            trades_opened,
+            ai_used,
+        )
         return {"ok": True}
 
     # Rough minimum qty per symbol — Bybit rejects orders below these sizes.
@@ -434,59 +467,59 @@ class TradingEngine:
                     user_id=agent.user_id,
                     agent_id=agent.id,
                     event_type="min_qty",
-                    severity="warning",
-                    message=msg,
-                    details={"symbol": symbol, "qty": qty, "min_qty": min_qty},
-                )
-                return
+                    if groq_best:
+                        symbol, df, screener_signal, groq_signal, open_position = groq_best
+                        try:
+                            final_signal = await grok_analyst.gpt_decide(
+                                groq_signal, df,
+                                symbol=symbol, timeframe=agent.timeframe,
+                                agent_name=agent.name,
+                            )
+                            agent.last_signal = final_signal.action
+                            agent.last_signal_symbol = symbol
+                            # If the screener is significantly more confident than AI, prefer screener.
+                            if screener_signal.confidence >= final_signal.confidence + screener_advantage_delta:
+                                logger.info(
+                                    "agent {} choosing SCREENER over AI: screener_conf={:.2f} ai_conf={:.2f} delta={:.2f}",
+                                    agent.id,
+                                    screener_signal.confidence,
+                                    final_signal.confidence,
+                                    screener_advantage_delta,
+                                )
+                                chosen = screener_signal
+                                chosen_ai_available = False
+                            else:
+                                chosen = final_signal
+                                chosen_ai_available = True
 
-            logger.info(
-                "agent {} {} OPENING TRADE: {} @ {:.4f} qty={:.6f} SL={:.3f}% TP={:.3f}%",
-                agent.id, symbol, side, last_price, qty, sl_pct, tp_pct,
-            )
-            logger.debug(
-                "agent {} {} ACCEPTED: confidence={:.2f} min_conf={:.2f} ai_available={}",
-                agent.id,
-                symbol,
-                signal.confidence,
-                min_conf,
-                ai_available,
-            )
-            await self._open_trade(
-                agent=agent,
-                api_key=api_key,
-                client=client,
-                symbol=symbol,
-                side=side,  # type: ignore[arg-type]
-                entry_price=last_price,
-                quantity=qty,
-                stop_loss_pct=sl_pct,
-                take_profit_pct=tp_pct,
-                signal=signal,
-                risk_payload={
-                    "approved": True,
-                    "reason": decision.reason,
-                    "risk_amount": decision.risk_amount,
-                    "sl_pct": sl_pct,
-                    "tp_pct": tp_pct,
-                },
-            )
-
-    @staticmethod
-    async def _open_position(agent_id, symbol: str) -> Position | None:
-        return await Position.find_one(
-            Position.agent_id == agent_id,
-            Position.symbol == symbol,
-            Position.is_open == True,  # noqa: E712
-        )
-
-    async def _close_all_positions(self, agent: Agent, api_key, client, reason: str) -> int:
-        """Gracefully wind down open positions before a cooldown.
-
-        Does NOT close abruptly. Instead:
-        - Profitable positions: close immediately to lock in gains
-        - Breakeven positions (within 0.1% of entry): close to free up capital
-        - Losing positions that are near stop loss (>60% of SL distance): close to prevent further loss
+                            await self._execute_signal(
+                                agent,
+                                api_key,
+                                client,
+                                symbol,
+                                df,
+                                chosen,
+                                open_position,
+                                ai_available=chosen_ai_available,
+                            )
+                            if chosen.action != "hold":
+                                signals_summary.append(f"{symbol}:{chosen.action}")
+                        except Exception as exc:
+                            logger.warning("agent {} GPT decision failed: {} — using Groq signal", agent.id, exc)
+                            agent.last_signal = groq_signal.action
+                            agent.last_signal_symbol = symbol
+                            await self._execute_signal(
+                                agent,
+                                api_key,
+                                client,
+                                symbol,
+                                df,
+                                groq_signal,
+                                open_position,
+                                ai_available=True,
+                            )
+                            if groq_signal.action != "hold":
+                                signals_summary.append(f"{symbol}:{groq_signal.action}")
         - Positions still running toward TP with room to profit: leave open
           with a tightened stop loss (moved to breakeven) so they can't turn
           into big losses while the agent is in cooldown
