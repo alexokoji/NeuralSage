@@ -27,6 +27,7 @@ from app.services.exchange.base import ExchangeError, OrderResult
 import app.services.grok_analyst as grok_analyst
 from app.services.notifications import NotificationService
 from app.services.risk_engine import RiskEngine
+from app.services.signal_policy import get_entry_confidence_threshold, should_execute_entry_signal
 from app.services.strategy import StrategyContext, get_strategy
 from app.services.strategy.indicators import candles_to_df
 
@@ -179,14 +180,32 @@ class TradingEngine:
                     )
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
-                    await self._execute_signal(agent, api_key, client, symbol, df, final_signal, open_position)
+                    await self._execute_signal(
+                        agent,
+                        api_key,
+                        client,
+                        symbol,
+                        df,
+                        final_signal,
+                        open_position,
+                        ai_available=True,
+                    )
                     if final_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{final_signal.action}")
                 except Exception as exc:
                     logger.warning("agent {} GPT decision failed: {} — using Groq signal", agent.id, exc)
                     agent.last_signal = groq_signal.action
                     agent.last_signal_symbol = symbol
-                    await self._execute_signal(agent, api_key, client, symbol, df, groq_signal, open_position)
+                    await self._execute_signal(
+                        agent,
+                        api_key,
+                        client,
+                        symbol,
+                        df,
+                        groq_signal,
+                        open_position,
+                        ai_available=True,
+                    )
                     if groq_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{groq_signal.action}")
             elif candidates:
@@ -198,7 +217,16 @@ class TradingEngine:
                                 agent.id, symbol, screener_signal.action, screener_signal.confidence)
                     agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = f"{symbol} (no AI)"
-                    await self._execute_signal(agent, api_key, client, symbol, df, screener_signal, open_position)
+                    await self._execute_signal(
+                        agent,
+                        api_key,
+                        client,
+                        symbol,
+                        df,
+                        screener_signal,
+                        open_position,
+                        ai_available=False,
+                    )
                     if screener_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
 
@@ -275,6 +303,7 @@ class TradingEngine:
         last_price = float(df["close"].iloc[-1])
         win_rate = (agent.winning_trades / agent.total_trades) if agent.total_trades > 0 else 0.5
 
+        ai_available = True
         try:
             signal = await grok_analyst.analyse_market(
                 screener_signal,
@@ -301,6 +330,7 @@ class TradingEngine:
         except Exception as exc:
             logger.warning("agent {} {} AI failed: {}", agent.id, symbol, exc)
             signal = screener_signal
+            ai_available = False
 
         agent.last_signal = signal.action
         agent.last_signal_symbol = symbol
@@ -311,9 +341,29 @@ class TradingEngine:
             agent.id, symbol, signal.action, last_price, signal.confidence,
         )
 
-        await self._execute_signal(agent, api_key, client, symbol, df, signal, open_position)
+        await self._execute_signal(
+            agent,
+            api_key,
+            client,
+            symbol,
+            df,
+            signal,
+            open_position,
+            ai_available=ai_available,
+        )
 
-    async def _execute_signal(self, agent, api_key, client, symbol, df, signal, open_position) -> None:
+    async def _execute_signal(
+        self,
+        agent,
+        api_key,
+        client,
+        symbol,
+        df,
+        signal,
+        open_position,
+        *,
+        ai_available: bool = True,
+    ) -> None:
         """Execute a trading signal (entry, exit, or hold)."""
         last_price = float(df["close"].iloc[-1])
 
@@ -325,10 +375,17 @@ class TradingEngine:
             return
 
         if signal.action in ("enter_long", "enter_short") and open_position is None:
-            min_conf = 0.60 if agent.protect_mode else 0.40
-            if signal.confidence < min_conf:
+            min_conf = get_entry_confidence_threshold(
+                protect_mode=bool(agent.protect_mode),
+                ai_available=ai_available,
+            )
+            if not should_execute_entry_signal(
+                signal.confidence,
+                protect_mode=bool(agent.protect_mode),
+                ai_available=ai_available,
+            ):
                 agent.last_error = f"AI confidence {signal.confidence:.2f} < {min_conf}"
-                logger.info("agent {} {} REJECTED: confidence {:.2f} < {:.2f}", agent.id, symbol, signal.confidence, min_conf)
+                logger.info("agent {} {} REJECTED: confidence {:.2f} < {:.2f} (ai_available={})", agent.id, symbol, signal.confidence, min_conf, ai_available)
                 return
 
             side: str = "long" if signal.action == "enter_long" else "short"
@@ -386,6 +443,14 @@ class TradingEngine:
             logger.info(
                 "agent {} {} OPENING TRADE: {} @ {:.4f} qty={:.6f} SL={:.3f}% TP={:.3f}%",
                 agent.id, symbol, side, last_price, qty, sl_pct, tp_pct,
+            )
+            logger.debug(
+                "agent {} {} ACCEPTED: confidence={:.2f} min_conf={:.2f} ai_available={}",
+                agent.id,
+                symbol,
+                signal.confidence,
+                min_conf,
+                ai_available,
             )
             await self._open_trade(
                 agent=agent,
