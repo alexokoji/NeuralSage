@@ -1,8 +1,12 @@
 """MongoDB connection and Beanie initialisation."""
 from __future__ import annotations
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from typing import Any
+
 from beanie import init_beanie
+from loguru import logger
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ConfigurationError, PyMongoError
 
 from app.config import settings
 
@@ -29,23 +33,26 @@ async def init_db() -> None:
     from app.models.notification import Notification
     from app.models.strategy_observation import StrategyObservation
 
-    client = get_motor_client()
-    db = client[settings.MONGODB_DB_NAME]
-    await init_beanie(
-        database=db,
-        document_models=[
-            User,
-            ApiKey,
-            Strategy,
-            Agent,
-            Trade,
-            Position,
-            AgentPerformance,
-            RiskEvent,
-            Notification,
-            StrategyObservation,
-        ],
-    )
+    try:
+        client = get_motor_client()
+        db = client[settings.MONGODB_DB_NAME]
+        await init_beanie(
+            database=db,
+            document_models=[
+                User,
+                ApiKey,
+                Strategy,
+                Agent,
+                Trade,
+                Position,
+                AgentPerformance,
+                RiskEvent,
+                Notification,
+                StrategyObservation,
+            ],
+        )
+    except (ConfigurationError, PyMongoError, OSError, ValueError) as exc:
+        logger.warning("database bootstrap skipped: {}", exc)
 
 
 async def close_db() -> None:
