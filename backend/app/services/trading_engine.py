@@ -331,6 +331,15 @@ class TradingEngine:
     # debug so they don't pollute logs on every tick.
     _KNOWN_UNAVAILABLE: frozenset[str] = frozenset({"TONUSDT"})
 
+    async def _open_position(self, agent_id: uuid.UUID, symbol: str) -> Position | None:
+        """Fetch the current open position for an agent and symbol."""
+        positions = await Position.find(
+            Position.agent_id == agent_id,
+            Position.symbol == symbol,
+            Position.is_open == True,  # noqa: E712
+        ).sort(-Position.opened_at).to_list()
+        return positions[0] if positions else None
+
     async def _tick_symbol_ai(self, agent: Agent, api_key, strategy, client, symbol: str, df, screener_signal, open_position) -> None:
         """Process a symbol with AI analysis — called for top candidates only."""
         last_price = float(df["close"].iloc[-1])
