@@ -192,13 +192,6 @@ class TradingEngine:
                         symbol=symbol, timeframe=agent.timeframe,
                         agent_name=agent.name,
                     )
-                    if should_prefer_screener(
-                        screener_signal.confidence,
-                        final_signal.confidence,
-                        screener_advantage_delta=screener_advantage_delta,
-                    ):
-                        final_signal = screener_signal
-                        ai_used = False
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
@@ -234,7 +227,7 @@ class TradingEngine:
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
                 if screener_signal.action in ("enter_long", "enter_short") and screener_signal.confidence >= 0.50:
-                    logger.info("agent {} AI unavailable — executing screener signal {} {} (conf {:.2f})",
+                    logger.info("agent {} AI unavailable — executing screener fallback {} {} (conf {:.2f})",
                                 agent.id, symbol, screener_signal.action, screener_signal.confidence)
                     agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = f"{symbol} (no AI)"
