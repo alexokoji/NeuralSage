@@ -294,27 +294,65 @@ class TradingEngine:
         )
         return {"ok": True}
 
-    # Rough minimum qty per symbol — Bybit rejects orders below these sizes.
+    # Bybit SELL order minimum quantities (per symbol base currency)
+    # These are the actual minimums Bybit enforces, NOT the notional minimums.
     _MIN_QTY: dict[str, float] = {
         "BTC": 0.001,
-        "ETH": 0.01,
+        "ETH": 0.03,      # Bybit SELL minimum for ETHUSDT
         "SOL": 0.1,
         "BNB": 0.01,
         "XRP": 1.0,
     }
-    _DEFAULT_MIN_QTY = 0.01
+    _DEFAULT_MIN_QTY = 0.03
 
     # Forex pairs have different minimums (in units of base currency)
     _FOREX_MIN_QTY = 1  # OANDA allows 1 unit minimum
 
     @classmethod
-    def _min_qty_for(cls, symbol: str, exchange: str = "") -> float:
+    def _min_qty_for(cls, symbol: str, exchange: str = "", side: str | None = None) -> float:
         if cls._is_forex(exchange):
             return cls._FOREX_MIN_QTY
         for prefix, min_q in cls._MIN_QTY.items():
             if symbol.upper().startswith(prefix):
+                # Some exchanges enforce different minimums for sell (short) vs buy
+                # on certain instruments (empirically observed on Bybit ETHUSDT).
+                if prefix == "ETH" and side and side.lower() == "short":
+                    # observed sell minimum around 0.03 on Bybit for ETH
+                    return max(min_q, 0.03)
                 return min_q
         return cls._DEFAULT_MIN_QTY
+
+    async def _adjust_quantity_for_exchange(self, client, symbol: str, qty: float) -> tuple[float, float]:
+        """Query the exchange for lot/step info and return (adjusted_qty, exchange_min_qty).
+
+        adjusted_qty is qty rounded DOWN to the nearest allowed `qtyStep`.
+        exchange_min_qty is the instrument minOrderQty if available, else the
+        engine default from `_min_qty_for`.
+        """
+        try:
+            res = await client._signed("GET", "/v5/market/instruments-info", params={"category": "linear", "symbol": symbol})
+            items = res.get("list") or []
+            if items:
+                inst = items[0]
+                lot = inst.get("lotSizeFilter") or {}
+                step = float(lot.get("qtyStep") or 0) or 0.0
+                min_order = float(lot.get("minOrderQty") or 0) or 0.0
+                if step > 0:
+                    from decimal import Decimal, ROUND_DOWN
+
+                    dec_qty = Decimal(str(qty))
+                    dec_step = Decimal(str(step))
+                    steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
+                    adj = float((steps * dec_step))
+                    # If adjusted quantity is zero, fall back to min_order
+                    if adj <= 0 and min_order > 0:
+                        adj = float(min_order)
+                    exchange_min = min_order if min_order > 0 else self._min_qty_for(symbol)
+                    return adj, exchange_min
+        except Exception:
+            pass
+        # Fallbacks
+        return qty, self._min_qty_for(symbol)
 
     @staticmethod
     def _is_forex(exchange: str) -> bool:
@@ -455,13 +493,14 @@ class TradingEngine:
                 logger.info("agent {} {} RISK BLOCKED: {}", agent.id, symbol, decision.reason)
                 return
 
-            # Enforce exchange minimum order size — prevent wasted API calls.
-            min_qty = self._min_qty_for(symbol, api_key.exchange if hasattr(api_key, 'exchange') else "")
+            # Enforce exchange minimum order size and step — prevent wasted API calls.
             qty = decision.sized_quantity
-            if qty < min_qty:
+            # Ask the exchange for instrument step/min info and adjust qty accordingly.
+            adj_qty, exchange_min = await self._adjust_quantity_for_exchange(client, symbol, qty)
+            if adj_qty < exchange_min:
                 msg = (
-                    f"position size {qty:.6f} below exchange minimum {min_qty} for {symbol}. "
-                    f"Increase assigned capital (current: ${agent.assigned_capital:.0f})"
+                    f"position size {qty:.6f} adjusted to {adj_qty:.6f} below exchange minimum {exchange_min} for {symbol}. "
+                    f"Increase assigned capital (current: ${agent.assigned_capital:.0f}) or tighten SL."
                 )
                 agent.last_error = msg
                 logger.warning("agent {} {}: {}", agent.id, symbol, msg)
@@ -471,9 +510,11 @@ class TradingEngine:
                     event_type="min_qty",
                     severity="warning",
                     message=msg,
-                    details={"symbol": symbol, "qty": qty, "min_qty": min_qty},
+                    details={"symbol": symbol, "qty": qty, "adjusted_qty": adj_qty, "min_qty": exchange_min},
                 )
                 return
+            # Use adjusted qty for placement
+            qty = adj_qty
 
             # Place the order through the exchange client.
             await self._open_trade(
@@ -514,6 +555,7 @@ class TradingEngine:
             except Exception:
                 pass
 
+        reason = "position management"
         closed = 0
         tightened = 0
         for pos in positions:
@@ -700,6 +742,19 @@ class TradingEngine:
             )
         else:
             try:
+                # Safety: ensure live orders always include SL and TP
+                if not agent.is_paper_trade and (order.stop_loss is None or order.take_profit is None):
+                    agent.last_error = "live orders must include stop_loss and take_profit"
+                    await RiskEngine.log_risk_event(
+                        user_id=agent.user_id,
+                        agent_id=agent.id,
+                        event_type="order_validation",
+                        severity="critical",
+                        message="order rejected: missing SL/TP for live order",
+                        details={"symbol": symbol, "side": side},
+                    )
+                    return
+
                 placed = await client.place_order(order)
             except ExchangeError as exc:
                 agent.last_error = f"order failed: {exc}"

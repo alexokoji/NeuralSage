@@ -6,7 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-AgentStatus = Literal["idle", "active", "paused", "stopped", "error"]
+# Allow 'inactive' as an alias used by some older agents or external tooling.
+AgentStatus = Literal["idle", "inactive", "active", "paused", "stopped", "error"]
 StrategyType = str  # was Literal; now accepts composite + custom strategies
 Timeframe = Literal["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
 

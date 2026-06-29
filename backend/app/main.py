@@ -69,10 +69,17 @@ app.add_middleware(
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("unhandled error on {} {}", request.method, request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "internal server error" if not settings.APP_DEBUG else str(exc)},
-    )
+    # Ensure CORS headers are present even on internal errors so browsers don't
+    # discard the response due to missing Access-Control-Allow-Origin.
+    origin = settings.cors_origins[0] if settings.cors_origins else "*"
+    content = {"detail": "internal server error" if not settings.APP_DEBUG else str(exc)}
+    resp = JSONResponse(status_code=500, content=content)
+    try:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+    except Exception:
+        pass
+    return resp
 
 
 @app.get("/health")
