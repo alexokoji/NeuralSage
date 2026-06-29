@@ -566,12 +566,12 @@ class TradingEngine:
             )
         return closed
 
-    async def _open_trade(
+    async def _persist_open_trade(
         self,
         *,
         agent: Agent,
         api_key,
-        client,
+        placed: OrderResult,
         symbol: str,
         side: str,
         entry_price: float,
@@ -591,39 +591,6 @@ class TradingEngine:
             if side == "long"
             else entry_price * (1 - take_profit_pct / 100)
         )
-
-        order = OrderRequest(
-            symbol=symbol,
-            side="buy" if side == "long" else "sell",
-            order_type="market",
-            quantity=quantity,
-            stop_loss=sl_price,
-            take_profit=tp_price,
-            client_order_id=f"agent-{agent.id}-{uuid.uuid4().hex[:8]}",
-        )
-
-        if agent.is_paper_trade:
-            placed = OrderResult(
-                exchange_order_id=f"paper-{uuid.uuid4().hex[:12]}",
-                status="filled",
-                avg_fill_price=entry_price,
-                filled_qty=quantity,
-                raw={"paper": True},
-            )
-        else:
-            try:
-                placed = await client.place_order(order)
-            except ExchangeError as exc:
-                agent.last_error = f"order failed: {exc}"
-                await RiskEngine.log_risk_event(
-                    user_id=agent.user_id,
-                    agent_id=agent.id,
-                    event_type="api_error",
-                    severity="critical",
-                    message=f"order placement failed: {exc}",
-                    details={"symbol": symbol, "side": side},
-                )
-                return
 
         trade = Trade(
             user_id=agent.user_id,
@@ -685,6 +652,79 @@ class TradingEngine:
                 f"SL {sl_price:.4f}, TP {tp_price:.4f}"
             ),
             data={"agent_id": str(agent.id), "trade_id": str(trade.id)},
+        )
+
+    async def _open_trade(
+        self,
+        *,
+        agent: Agent,
+        api_key,
+        client,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        quantity: float,
+        stop_loss_pct: float,
+        take_profit_pct: float,
+        signal,
+        risk_payload: dict[str, Any],
+    ) -> None:
+        sl_price = (
+            entry_price * (1 - stop_loss_pct / 100)
+            if side == "long"
+            else entry_price * (1 + stop_loss_pct / 100)
+        )
+        tp_price = (
+            entry_price * (1 + take_profit_pct / 100)
+            if side == "long"
+            else entry_price * (1 - take_profit_pct / 100)
+        )
+
+        order = OrderRequest(
+            symbol=symbol,
+            side="buy" if side == "long" else "sell",
+            order_type="market",
+            quantity=quantity,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            client_order_id=f"agent-{agent.id}-{uuid.uuid4().hex[:8]}",
+        )
+
+        if agent.is_paper_trade:
+            placed = OrderResult(
+                exchange_order_id=f"paper-{uuid.uuid4().hex[:12]}",
+                status="filled",
+                avg_fill_price=entry_price,
+                filled_qty=quantity,
+                raw={"paper": True},
+            )
+        else:
+            try:
+                placed = await client.place_order(order)
+            except ExchangeError as exc:
+                agent.last_error = f"order failed: {exc}"
+                await RiskEngine.log_risk_event(
+                    user_id=agent.user_id,
+                    agent_id=agent.id,
+                    event_type="api_error",
+                    severity="critical",
+                    message=f"order placement failed: {exc}",
+                    details={"symbol": symbol, "side": side},
+                )
+                return
+
+        await self._persist_open_trade(
+            agent=agent,
+            api_key=api_key,
+            placed=placed,
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            quantity=quantity,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            signal=signal,
+            risk_payload=risk_payload,
         )
 
     async def _close_position(

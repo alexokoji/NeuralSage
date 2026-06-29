@@ -12,13 +12,19 @@ from app.services.exchange.bybit import BybitClient
 from app.services.exchange.deriv import DerivClient
 
 
+def _has_real_trade_permission(api_key_row: ApiKey) -> bool:
+    permissions = (api_key_row.permissions or [])
+    if "trade" in permissions:
+        return True
+    if api_key_row.verified and api_key_row.is_active:
+        return True
+    return False
+
+
 def build_client(api_key_row: ApiKey) -> ExchangeClient:
     # Allow if the key was verified (exchange enforces actual permissions at order time)
     # OR if the permissions array explicitly includes "trade" (default after creation).
-    can_trade = (
-        "trade" in (api_key_row.permissions or [])
-        or (api_key_row.verified and api_key_row.is_active)
-    )
+    can_trade = _has_real_trade_permission(api_key_row)
     if not can_trade:
         raise PermissionError(
             "api key is not verified — verify the key in Settings before starting agents"
