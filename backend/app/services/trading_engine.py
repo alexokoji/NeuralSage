@@ -281,16 +281,19 @@ class TradingEngine:
                                 agent.id, symbol, screener_signal.action, screener_signal.confidence)
                     agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = f"{symbol} (no AI)"
-                    await self._execute_signal(
-                        agent,
-                        api_key,
-                        client,
-                        symbol,
-                        df,
-                        screener_signal,
-                        open_position,
-                        ai_available=False,
-                    )
+                    try:
+                        await self._execute_signal(
+                            agent,
+                            api_key,
+                            client,
+                            symbol,
+                            df,
+                            screener_signal,
+                            open_position,
+                            ai_available=False,
+                        )
+                    except Exception as exc:
+                        logger.error("agent {} _execute_signal for {} raised exception: {}", agent.id, symbol, exc, exc_info=True)
                     if screener_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
 
@@ -543,11 +546,15 @@ class TradingEngine:
     ) -> None:
         """Execute a trading signal (entry, exit, or hold)."""
         last_price = float(df["close"].iloc[-1])
+        logger.debug("agent {} _execute_signal {} action={} conf={:.2f} last_price={}", 
+                     agent.id, symbol, signal.action, signal.confidence, last_price)
 
         if signal.action == "hold":
+            logger.debug("agent {} _execute_signal {} skipping hold", agent.id, symbol)
             return
 
         if signal.action == "exit" and open_position is not None:
+            logger.debug("agent {} _execute_signal {} closing position", agent.id, symbol)
             await self._close_position(agent, api_key, client, open_position, last_price, signal.reason)
             return
 
@@ -592,6 +599,8 @@ class TradingEngine:
                 stop_loss_pct=sl_pct,
                 side=side,  # type: ignore[arg-type]
             )
+            logger.debug("agent {} {} RiskEngine decision: approved={} qty={} reason={}", 
+                         agent.id, symbol, decision.approved, decision.sized_quantity, decision.reason)
             if not decision.approved:
                 agent.last_error = f"risk blocked: {decision.reason}"
                 logger.info("agent {} {} RISK BLOCKED: {}", agent.id, symbol, decision.reason)
@@ -600,7 +609,10 @@ class TradingEngine:
             # Enforce exchange minimum order size and step — prevent wasted API calls.
             qty = decision.sized_quantity
             # Ask the exchange for instrument step/min info and adjust qty accordingly.
+            logger.debug("agent {} {} asking exchange for lot/step info for qty={}", agent.id, symbol, qty)
             adj_qty, exchange_min = await self._adjust_quantity_for_exchange(client, symbol, qty)
+            logger.debug("agent {} {} exchange response: adj_qty={} exchange_min={}", 
+                         agent.id, symbol, adj_qty, exchange_min)
             if adj_qty < exchange_min:
                 msg = (
                     f"position size {qty:.6f} adjusted to {adj_qty:.6f} below exchange minimum {exchange_min} for {symbol}. "
@@ -619,6 +631,8 @@ class TradingEngine:
                 return
             # Use adjusted qty for placement
             qty = adj_qty
+            logger.info("agent {} {} PLACING ORDER: symbol={} side={} qty={} entry={} SL={}% TP={}%", 
+                        agent.id, symbol, symbol, side, qty, last_price, sl_pct, tp_pct)
 
             # Place the order through the exchange client.
             await self._open_trade(
@@ -640,6 +654,7 @@ class TradingEngine:
                     "tp_pct": tp_pct,
                 },
             )
+            logger.debug("agent {} {} _open_trade completed", agent.id, symbol)
         positions = await Position.find(
             Position.agent_id == agent.id,
             Position.is_open == True,  # noqa: E712
