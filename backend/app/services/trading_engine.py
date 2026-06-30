@@ -995,10 +995,12 @@ class TradingEngine:
             reduce_only=True,
             client_order_id=f"agent-{agent.id}-close-{uuid.uuid4().hex[:8]}",
         )
+        close_failed = False
         if not agent.is_paper_trade:
             try:
                 await client.place_order(order)
             except ExchangeError as exc:
+                close_failed = True
                 agent.last_error = f"close failed: {exc}"
                 await RiskEngine.log_risk_event(
                     user_id=agent.user_id,
@@ -1008,7 +1010,11 @@ class TradingEngine:
                     message=f"position close failed: {exc}",
                     details={"symbol": position.symbol},
                 )
-                return
+                logger.error("agent {} {} close order failed (will persist closure locally): {}", agent.id, position.symbol, exc)
+            except Exception as exc:
+                close_failed = True
+                agent.last_error = f"close failed: {exc}"
+                logger.exception("agent {} {} unexpected error during close (will persist closure locally): {}", agent.id, position.symbol, exc)
 
         entry_price = float(position.entry_price)
         qty = float(position.quantity)
@@ -1072,7 +1078,12 @@ class TradingEngine:
             trade.pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
             trade.status = "filled"
             trade.closed_at = datetime.now(timezone.utc)
-            trade.notes = reason
+            # If the exchange close failed, still persist the closure locally
+            # so the agent doesn't get stuck with stale open positions.
+            note = reason
+            if close_failed:
+                note = f"{reason} (exchange close failed — persisted locally)"
+            trade.notes = note
             await trade.save()
         else:
             logger.warning(
