@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     BYBIT_WS_PUBLIC_TESTNET_URL: str = "wss://stream-testnet.bybit.com/v5/public/linear"
     BITGET_REST_URL: str = "https://api.bitget.com"
     BITGET_WS_PUBLIC_URL: str = "wss://ws.bitget.com/v2/ws/public"
+    BITGET_PASSPHRASE: str = ""  # Optional; set if storing secret without passphrase
 
     # MetaAPI — MT5 forex trading via cloud bridge (https://metaapi.cloud)
     # Auth token and account ID are stored per-user in the API keys collection.

@@ -132,3 +132,19 @@ def test_open_position_returns_none_when_no_open_positions(monkeypatch):
     position = asyncio.run(TradingEngine()._open_position("agent-id", "BTCUSDT"))
 
     assert position is None
+
+
+def test_adjust_quantity_for_exchange_uses_bitget_step_and_minimum():
+    class DummyBitgetClient:
+        name = "bitget"
+
+        async def _public(self, path, params=None):
+            assert path == "/api/v2/mix/market/contracts"
+            assert params == {"productType": "USDT-FUTURES"}
+            return [{"symbol": "BTCUSDT", "sizeIncrement": "0.01", "minTradeNum": "0.01"}]
+
+    engine = TradingEngine()
+    adjusted_qty, exchange_min = asyncio.run(engine._adjust_quantity_for_exchange(DummyBitgetClient(), "BTCUSDT", 0.0032))
+
+    assert adjusted_qty == 0.01
+    assert exchange_min == 0.01

@@ -55,7 +55,8 @@ class BitgetClient(ExchangeClient):
         if "\n" in api_secret:
             secret, passphrase = api_secret.split("\n", 1)
         else:
-            secret, passphrase = api_secret, ""
+            secret = api_secret
+            passphrase = getattr(settings, "BITGET_PASSPHRASE", "") or ""
         self._key = api_key
         self._secret = secret.encode()
         self._passphrase = passphrase
@@ -127,7 +128,21 @@ class BitgetClient(ExchangeClient):
     # -------- interface --------
 
     async def verify_permissions(self) -> list[str]:
-        info = await self._signed("GET", "/api/v2/user/api-keys")
+        try:
+            info = await self._signed("GET", "/api/v2/user/api-keys")
+        except ExchangeError as e:
+            # Some Bitget account types do not expose the /api/v2/user/api-keys endpoint.
+            # If we can call get_balances (authenticated), assume the key has read + trade.
+            if "40404" in str(e):
+                try:
+                    await self.get_balances()
+                    return ["read", "trade"]
+                except Exception:
+                    raise InsufficientPermissions(
+                        "bitget key cannot access balances; check permissions"
+                    )
+            raise
+        
         items = info if isinstance(info, list) else [info]
         flags: set[str] = set()
         for k in items:

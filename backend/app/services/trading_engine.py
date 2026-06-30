@@ -312,6 +312,9 @@ class TradingEngine:
     def _min_qty_for(cls, symbol: str, exchange: str = "", side: str | None = None) -> float:
         if cls._is_forex(exchange):
             return cls._FOREX_MIN_QTY
+        exchange_name = (exchange or "").lower()
+        if exchange_name == "bitget":
+            return 0.01
         for prefix, min_q in cls._MIN_QTY.items():
             if symbol.upper().startswith(prefix):
                 # Some exchanges enforce different minimums for sell (short) vs buy
@@ -322,13 +325,60 @@ class TradingEngine:
                 return min_q
         return cls._DEFAULT_MIN_QTY
 
+    @staticmethod
+    def _coerce_step_and_minimum(payload: dict[str, Any]) -> tuple[float, float]:
+        def _first_numeric(*keys: str) -> float | None:
+            for key in keys:
+                value = payload.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+            return None
+
+        step = _first_numeric("sizeIncrement", "qtyStep", "step", "minTradeNum")
+        min_order = _first_numeric("minTradeNum", "minTradeAmount", "minOrderSize", "minSize", "minQty", "minOrderQty")
+        if step is None:
+            step = 1.0
+        if min_order is None:
+            min_order = step
+        return step, min_order
+
     async def _adjust_quantity_for_exchange(self, client, symbol: str, qty: float) -> tuple[float, float]:
         """Query the exchange for lot/step info and return (adjusted_qty, exchange_min_qty).
 
         adjusted_qty is qty rounded DOWN to the nearest allowed `qtyStep`.
-        exchange_min_qty is the instrument minOrderQty if available, else the
+        exchange_min_qty is the instrument minimum if available, else the
         engine default from `_min_qty_for`.
         """
+        exchange_name = (getattr(client, "name", "") or "").lower()
+
+        if exchange_name == "bitget":
+            try:
+                res = await client._public("/api/v2/mix/market/contracts", {"productType": "USDT-FUTURES"})
+                items = res if isinstance(res, list) else []
+                contract = next((item for item in items if str(item.get("symbol", "")).upper() == symbol.upper()), None)
+                if contract is None and items:
+                    contract = items[0]
+                if contract:
+                    step, min_order = self._coerce_step_and_minimum(contract)
+                    if step > 0:
+                        from decimal import Decimal, ROUND_DOWN
+
+                        dec_qty = Decimal(str(qty))
+                        dec_step = Decimal(str(step))
+                        steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
+                        adj = float(steps * dec_step)
+                        if adj <= 0 and min_order > 0:
+                            adj = float(min_order)
+                        exchange_min = max(float(min_order), self._min_qty_for(symbol, exchange=exchange_name))
+                        return adj, exchange_min
+            except Exception:
+                pass
+            return max(qty, self._min_qty_for(symbol, exchange=exchange_name)), self._min_qty_for(symbol, exchange=exchange_name)
+
         try:
             res = await client._signed("GET", "/v5/market/instruments-info", params={"category": "linear", "symbol": symbol})
             items = res.get("list") or []
