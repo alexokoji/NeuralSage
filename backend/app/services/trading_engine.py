@@ -94,10 +94,19 @@ class TradingEngine:
         candidates: list[tuple[str, Any, Any, Any]] = []  # (symbol, df, screener_signal, open_pos)
         signals_summary: list[str] = []
         try:
-            for symbol in (agent.trading_pairs or []):
+            for symbol in list(agent.trading_pairs or []):
                 try:
                     raw = await client.get_candles(symbol, agent.timeframe, limit=200)
                 except ExchangeError as exc:
+                    if self._is_symbol_removed_error(exc):
+                        agent.trading_pairs = [p for p in (agent.trading_pairs or []) if p != symbol]
+                        await agent.save()
+                        logger.warning(
+                            "agent {} {}: symbol removed from exchange, dropping from trading pairs",
+                            agent.id,
+                            symbol,
+                        )
+                        continue
                     if symbol not in self._KNOWN_UNAVAILABLE:
                         logger.warning("agent {} {}: candle fetch failed: {}", agent.id, symbol, exc)
                     continue
@@ -407,6 +416,10 @@ class TradingEngine:
     @staticmethod
     def _is_forex(exchange: str) -> bool:
         return exchange.startswith("mt5") or exchange.startswith("deriv") or exchange.startswith("oanda")
+
+    @staticmethod
+    def _is_symbol_removed_error(exc: Exception) -> bool:
+        return isinstance(exc, ExchangeError) and "The symbol has been removed" in str(exc)
 
     # Symbols that persistently fail on all fallback providers — downgraded to
     # debug so they don't pollute logs on every tick.

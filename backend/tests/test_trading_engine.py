@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from app.services.exchange.base import ExchangeError
 from app.services.trading_engine import TradingEngine
 
 
@@ -148,3 +149,59 @@ def test_adjust_quantity_for_exchange_uses_bitget_step_and_minimum():
 
     assert adjusted_qty == 0.01
     assert exchange_min == 0.01
+
+
+def test_run_agent_tick_removes_deleted_bitget_symbol(monkeypatch):
+    class DummyAgent:
+        def __init__(self):
+            self.status = "active"
+            self.strategy = SimpleNamespace(type="dummy")
+            self.strategy_params = {}
+            self.trading_pairs = ["MATICUSDT"]
+            self.timeframe = "1h"
+            self.assigned_capital = 0
+            self.current_day_pnl = 0
+            self.total_trades = 0
+            self.session_trade_count = 0
+            self.tick_count = 0
+            self.session_trade_count = 0
+            self.last_signal = None
+            self.last_signal_symbol = None
+            self.last_error = None
+            self.id = "agent-1"
+            self.user_id = "user-1"
+            self.name = "TEST"
+            self.saved = False
+
+        async def save(self):
+            self.saved = True
+
+    class DummyApiKey:
+        exchange = "bitget"
+
+    class DummyClient:
+        name = "bitget"
+
+        async def get_candles(self, symbol, interval, limit=200):
+            raise ExchangeError("bitget public 40309: The symbol has been removed")
+
+        async def close(self):
+            return None
+
+    def fake_build_client(api_key):
+        return DummyClient()
+
+    def fake_get_strategy(strategy_type):
+        return SimpleNamespace(evaluate=lambda df, params, ctx: SimpleNamespace(action="hold", confidence=0.0))
+
+    monkeypatch.setattr("app.services.trading_engine.build_client", fake_build_client)
+    monkeypatch.setattr("app.services.trading_engine.get_strategy", fake_get_strategy)
+
+    engine = TradingEngine()
+    agent = DummyAgent()
+    api_key = DummyApiKey()
+
+    asyncio.run(engine.run_agent_tick(agent, api_key))
+
+    assert agent.trading_pairs == []
+    assert agent.saved is True
