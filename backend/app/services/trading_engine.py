@@ -409,8 +409,8 @@ class TradingEngine:
         # If price_tick not found, default to None (caller may ignore)
         return step, min_order, price_tick
 
-    async def _adjust_quantity_for_exchange(self, client, symbol: str, qty: float) -> tuple[float, float]:
-        """Query the exchange for lot/step info and return (adjusted_qty, exchange_min_qty).
+    async def _adjust_quantity_for_exchange(self, client, symbol: str, qty: float) -> tuple[float, float, float | None]:
+        """Query the exchange for lot/step info and return (adjusted_qty, exchange_min_qty, price_tick).
 
         adjusted_qty is qty rounded DOWN to the nearest allowed `qtyStep`.
         exchange_min_qty is the instrument minimum if available, else the
@@ -422,7 +422,10 @@ class TradingEngine:
             try:
                 res = await client._public("/api/v2/mix/market/contracts", {"productType": "USDT-FUTURES"})
                 items = res if isinstance(res, list) else []
-                contract = next((item for item in items if str(item.get("symbol", "")).upper() == symbol.upper()), None)
+                contract = next(
+                    (item for item in items if str(item.get("symbol", "")).upper() == symbol.upper()),
+                    None,
+                )
                 if contract is None and items:
                     contract = items[0]
                 if contract:
@@ -440,43 +443,47 @@ class TradingEngine:
                         return adj, exchange_min, price_tick
             except Exception:
                 pass
-            return max(qty, self._min_qty_for(symbol, exchange=exchange_name)), self._min_qty_for(symbol, exchange=exchange_name), None
+
+            fallback_min = self._min_qty_for(symbol, exchange=exchange_name)
+            return max(qty, fallback_min), fallback_min, None
 
         try:
-            res = await client._signed("GET", "/v5/market/instruments-info", params={"category": "linear", "symbol": symbol})
+            res = await client._signed(
+                "GET",
+                "/v5/market/instruments-info",
+                params={"category": "linear", "symbol": symbol},
+            )
             items = res.get("list") or []
             if items:
                 inst = items[0]
                 lot = inst.get("lotSizeFilter") or {}
                 step = float(lot.get("qtyStep") or 0) or 0.0
                 min_order = float(lot.get("minOrderQty") or 0) or 0.0
-                if items:
-                    inst = items[0]
-                    lot = inst.get("lotSizeFilter") or {}
-                    step = float(lot.get("qtyStep") or 0) or 0.0
-                    min_order = float(lot.get("minOrderQty") or 0) or 0.0
-                    # try to extract price tick
-                    pf = inst.get("priceFilter") or {}
+                pf = inst.get("priceFilter") or {}
+                price_tick = None
+                try:
+                    price_tick = float(
+                        pf.get("tickSize") or pf.get("priceTick") or pf.get("priceIncrement") or 0
+                    ) or None
+                except Exception:
                     price_tick = None
-                    try:
-                        price_tick = float(pf.get("tickSize") or pf.get("priceTick") or pf.get("priceIncrement") or 0) or None
-                    except Exception:
-                        price_tick = None
-                    if step > 0:
-                        from decimal import Decimal, ROUND_DOWN
 
-                        dec_qty = Decimal(str(qty))
-                        dec_step = Decimal(str(step))
-                        steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
-                        adj = float((steps * dec_step))
-                        # If adjusted quantity is zero, fall back to min_order
-                        if adj <= 0 and min_order > 0:
-                            adj = float(min_order)
-                        exchange_min = min_order if min_order > 0 else self._min_qty_for(symbol)
+                if step > 0:
+                    from decimal import Decimal, ROUND_DOWN
 
-                        return adj, exchange_min, price_tick
-                return max(qty, self._min_qty_for(symbol)), self._min_qty_for(symbol), None
-        return exchange.startswith("mt5") or exchange.startswith("deriv") or exchange.startswith("oanda")
+                    dec_qty = Decimal(str(qty))
+                    dec_step = Decimal(str(step))
+                    steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
+                    adj = float(steps * dec_step)
+                    if adj <= 0 and min_order > 0:
+                        adj = float(min_order)
+                    exchange_min = min_order if min_order > 0 else self._min_qty_for(symbol)
+                    return adj, exchange_min, price_tick
+        except Exception:
+            pass
+
+        fallback_min = self._min_qty_for(symbol)
+        return max(qty, fallback_min), fallback_min, None
 
     @staticmethod
     def _is_symbol_removed_error(exc: Exception) -> bool:
