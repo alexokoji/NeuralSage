@@ -399,7 +399,8 @@ class TradingEngine:
 
         step = _first_numeric("sizeIncrement", "qtyStep", "step", "minTradeNum")
         min_order = _first_numeric("minTradeNum", "minTradeAmount", "minOrderSize", "minSize", "minQty", "minOrderQty")
-        # Try to extract price tick / price increment for rounding SL/TP
+        # Try to extract price tick / price increment for rounding SL/TP.
+        # Bitget exposes this as `pricePlace` (decimal places) rather than a numeric tick.
         price_tick = _first_numeric(
             "priceTick",
             "priceIncrement",
@@ -408,6 +409,10 @@ class TradingEngine:
             "minPrice",
             "tick",
         )
+        if price_tick is None:
+            price_place = _first_numeric("pricePlace")
+            if price_place is not None:
+                price_tick = 10 ** (-int(price_place))
         if step is None:
             step = 1.0
         if min_order is None:
