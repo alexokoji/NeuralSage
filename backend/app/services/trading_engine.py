@@ -753,6 +753,7 @@ class TradingEngine:
             else entry_price * (1 - take_profit_pct / 100)
         )
 
+        logger.info("agent {} {} persisting trade doc for symbol={} qty={}", agent.id, symbol, symbol, quantity)
         trade = Trade(
             user_id=agent.user_id,
             agent_id=agent.id,
@@ -777,6 +778,7 @@ class TradingEngine:
             opened_at=datetime.now(timezone.utc),
         )
         await trade.insert()
+        logger.info("agent {} {} persisted trade doc id={}", agent.id, symbol, trade.id)
 
         position = Position(
             user_id=agent.user_id,
@@ -792,6 +794,7 @@ class TradingEngine:
             take_profit=tp_price,
         )
         await position.insert()
+        logger.info("agent {} {} persisted position doc id={}", agent.id, symbol, position.id)
 
         agent.total_trades = (agent.total_trades or 0) + 1
         agent.last_trade_at = datetime.now(timezone.utc)
@@ -803,6 +806,7 @@ class TradingEngine:
         # Session trade counter — triggers wind-down after N trades
         agent.session_trade_count = (agent.session_trade_count or 0) + 1
         await agent.save()
+        logger.info("agent {} {} updated counters: total_trades={} session_trade_count={}", agent.id, symbol, agent.total_trades, agent.session_trade_count)
 
         await NotificationService.create(
             user_id=agent.user_id,
@@ -852,6 +856,7 @@ class TradingEngine:
         )
 
         if agent.is_paper_trade:
+            logger.info("agent {} {} paper trade path: qty={} entry={}", agent.id, symbol, quantity, entry_price)
             placed = OrderResult(
                 exchange_order_id=f"paper-{uuid.uuid4().hex[:12]}",
                 status="filled",
@@ -872,9 +877,12 @@ class TradingEngine:
                         message="order rejected: missing SL/TP for live order",
                         details={"symbol": symbol, "side": side},
                     )
+                    logger.warning("agent {} {} live order rejected: missing SL/TP", agent.id, symbol)
                     return
 
+                logger.info("agent {} {} sending live order: qty={} side={} sl={} tp={}", agent.id, symbol, quantity, side, sl_price, tp_price)
                 placed = await client.place_order(order)
+                logger.info("agent {} {} live order response: status={} order_id={}", agent.id, symbol, getattr(placed, "status", None), getattr(placed, "exchange_order_id", None))
             except ExchangeError as exc:
                 agent.last_error = f"order failed: {exc}"
                 await RiskEngine.log_risk_event(
@@ -885,8 +893,13 @@ class TradingEngine:
                     message=f"order placement failed: {exc}",
                     details={"symbol": symbol, "side": side},
                 )
+                logger.error("agent {} {} order placement failed: {}", agent.id, symbol, exc)
+                return
+            except Exception as exc:
+                logger.exception("agent {} {} unexpected error while placing order: {}", agent.id, symbol, exc)
                 return
 
+        logger.info("agent {} {} persisting trade after order placement", agent.id, symbol)
         await self._persist_open_trade(
             agent=agent,
             api_key=api_key,
