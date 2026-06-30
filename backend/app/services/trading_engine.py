@@ -345,6 +345,12 @@ class TradingEngine:
             trades_opened,
             ai_used,
         )
+        # Reconcile live open positions so the agent can observe unrealized P&L
+        try:
+            await self._reconcile_open_positions(agent, api_key, client)
+        except Exception as exc:
+            logger.debug("agent {} reconciliation failed: {}", agent.id, exc)
+
         return {"ok": True}
 
     # Bybit SELL order minimum quantities (per symbol base currency)
@@ -512,6 +518,60 @@ class TradingEngine:
             Position.is_open == True,  # noqa: E712
         ).sort(-Position.opened_at).to_list()
         return positions[0] if positions else None
+
+    async def _reconcile_open_positions(self, agent: Agent, api_key, client) -> None:
+        """Fetch current prices for open positions and update unrealized P&L.
+
+        This keeps `Position.current_price`, `unrealized_pnl` and
+        `unrealized_pnl_pct` up-to-date so the agent and LearningService have
+        accurate, timely signals about live trade performance.
+        """
+        positions = await Position.find(
+            Position.agent_id == agent.id,
+            Position.is_open == True,  # noqa: E712
+        ).to_list()
+        if not positions:
+            return
+
+        for pos in positions:
+            try:
+                # Use a short candles request for fresh price
+                raw = await client.get_candles(pos.symbol, agent.timeframe or "5m", limit=2)
+                if raw:
+                    from app.services.strategy.indicators import candles_to_df
+
+                    df = candles_to_df(raw)
+                    current = float(df["close"].iloc[-1])
+                else:
+                    # Fallback to last stored price
+                    current = float(pos.current_price or pos.entry_price)
+            except Exception:
+                current = float(pos.current_price or pos.entry_price)
+
+            try:
+                entry = float(pos.entry_price)
+                qty = float(pos.quantity)
+                gross = (current - entry) * qty
+                if pos.side == "short":
+                    gross = -gross
+
+                pos.current_price = current
+                pos.unrealized_pnl = gross
+                pos.unrealized_pnl_pct = (gross / max(entry * qty, 1e-9)) * 100
+                pos.updated_at = datetime.now(timezone.utc)
+                await pos.save()
+
+                # Also annotate the open trade (if linked) with an update note
+                if pos.trade_id:
+                    try:
+                        trade = await Trade.find_one(Trade.id == pos.trade_id)
+                        if trade and trade.status == "open":
+                            trade.notes = f"unrealized_pnl={pos.unrealized_pnl:.2f}"
+                            await trade.save()
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("agent {} failed to reconcile position {}", agent.id, pos.id)
 
     async def _tick_symbol_ai(self, agent: Agent, api_key, strategy, client, symbol: str, df, screener_signal, open_position) -> None:
         """Process a symbol with AI analysis — called for top candidates only."""

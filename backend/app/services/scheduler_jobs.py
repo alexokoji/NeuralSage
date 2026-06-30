@@ -13,6 +13,8 @@ from loguru import logger
 from app.models.agent import Agent
 from app.models.agent_performance import AgentPerformance
 from app.models.api_key import ApiKey
+from app.models.position import Position
+from app.models.trade import Trade
 from app.services.ai_optimizer import optimize_strategy_async
 import app.services.grok_analyst as grok_analyst
 from app.services.exchange import build_client
@@ -71,6 +73,91 @@ async def run_trading_tick_for_all_agents() -> dict:
         failed,
     )
     return {"processed": processed, "skipped": skipped, "failed": failed}
+
+
+async def reconcile_exchange_positions() -> dict:
+    """Compare DB positions with the exchange and repair stale/missing state.
+
+    This is meant to keep the agent's internal position history trustworthy
+    after exchange-side closes, order rejections, or reconnects.
+    """
+    repaired = 0
+    skipped = 0
+
+    try:
+        agents = await Agent.find(Agent.status == "active").to_list()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("exchange reconciliation failed to query agents: {}", exc)
+        return {"repaired": 0, "skipped": 0, "failed": True, "error": str(exc)}
+
+    for agent in agents:
+        try:
+            if not agent.api_key_id:
+                skipped += 1
+                continue
+            api_key = await ApiKey.get(agent.api_key_id)
+            if not api_key:
+                skipped += 1
+                continue
+
+            client = build_client(api_key)
+            try:
+                positions = await Position.find(
+                    Position.agent_id == agent.id,
+                    Position.is_open == True,  # noqa: E712
+                ).to_list()
+                if not positions:
+                    continue
+
+                # Query exchange for currently open positions (best-effort)
+                try:
+                    exchange_positions = await client.get_positions() or []
+                except Exception as exc:
+                    logger.debug("agent {} exchange position query failed: {}", agent.id, exc)
+                    exchange_positions = []
+
+                exchange_symbols = {
+                    str(item.get("symbol") or "").upper()
+                    for item in exchange_positions
+                    if item and str(item.get("symbol") or "").strip()
+                }
+
+                for pos in positions:
+                    if str(pos.symbol).upper() not in exchange_symbols:
+                        # DB says open but exchange says none; close locally.
+                        pos.is_open = False
+                        pos.current_price = pos.current_price or pos.entry_price
+                        pos.updated_at = datetime.now(timezone.utc)
+                        await pos.save()
+
+                        if pos.trade_id:
+                            try:
+                                trade = await Trade.find_one(Trade.id == pos.trade_id)
+                                if trade and trade.status == "open":
+                                    trade.status = "filled"
+                                    trade.closed_at = datetime.now(timezone.utc)
+                                    trade.notes = f"{trade.notes or ''} reconciled as closed by exchange".strip()
+                                    await trade.save()
+                            except Exception:
+                                pass
+                        repaired += 1
+                        logger.info(
+                            "agent {} reconciled stale position {} ({}) to closed",
+                            agent.id,
+                            pos.symbol,
+                            pos.id,
+                        )
+            finally:
+                await client.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("exchange reconciliation failed for agent {}: {}", agent.id, exc)
+
+    logger.info(
+        "exchange reconciliation complete: repaired={} skipped={}",
+        repaired,
+        skipped,
+    )
+    return {"repaired": repaired, "skipped": skipped, "failed": False}
 
 
 # --------------------------------------------------------------------------- #

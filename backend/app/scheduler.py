@@ -18,6 +18,7 @@ from loguru import logger
 from app.config import settings
 from app.services.scheduler_jobs import (
     check_missed_rollover,
+    reconcile_exchange_positions,
     run_daily_rollover,
     run_optimization_sweep,
     run_trading_tick_for_all_agents,
@@ -51,6 +52,14 @@ def start() -> None:
         run_optimization_sweep,
         CronTrigger(hour=f"*/{settings.OPTIMIZATION_INTERVAL_HOURS}", minute=0),
         id="optimization_sweep",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        reconcile_exchange_positions,
+        IntervalTrigger(minutes=2),
+        id="exchange_reconciliation",
         max_instances=1,
         coalesce=True,
         replace_existing=True,
