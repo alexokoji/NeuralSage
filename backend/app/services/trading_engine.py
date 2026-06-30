@@ -38,6 +38,11 @@ from app.services.strategy.indicators import candles_to_df
 
 class TradingEngine:
     """One-shot per-agent execution. Designed for the scheduler tick."""
+    # Agents with assigned capital at or below this threshold will receive
+    # conservative automatic defaults so tiny accounts can still place trades.
+    _SMALL_ACCOUNT_CAP_THRESHOLD = 50.0  # USD
+    _SMALL_ACCOUNT_DEFAULT_SL = 0.5  # percent
+    _SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT = 5.0  # percent
 
     async def run_agent_tick(self, agent: Agent, api_key: ApiKey) -> dict[str, Any]:
         if agent.status != "active":
@@ -53,6 +58,31 @@ class TradingEngine:
 
         agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
+        # Auto-normalize tiny accounts: apply tighter stop-loss defaults and
+        # relax max_risk_per_trade so the RiskEngine can size a non-zero qty.
+        try:
+            cap = float(agent.assigned_capital or 0)
+            if cap > 0 and cap <= self._SMALL_ACCOUNT_CAP_THRESHOLD:
+                sp = agent.strategy_params or {}
+                # Only set stop_loss_pct when not explicitly configured or
+                # when the configured value is looser than our tiny-account default.
+                cur_sl = float(sp.get("stop_loss_pct") or 0)
+                if cur_sl == 0 or cur_sl > self._SMALL_ACCOUNT_DEFAULT_SL:
+                    sp["stop_loss_pct"] = float(self._SMALL_ACCOUNT_DEFAULT_SL)
+                    agent.strategy_params = sp
+                # Ensure max_risk_per_trade is at least the tiny-account default
+                if (agent.max_risk_per_trade or 0) < self._SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT:
+                    agent.max_risk_per_trade = float(self._SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT)
+                    logger.info(
+                        "agent {} small-account normalization applied: assigned_capital=${:.2f}, stop_loss_pct={}%, max_risk_per_trade={}%%",
+                        agent.id,
+                        cap,
+                        sp.get("stop_loss_pct"),
+                        agent.max_risk_per_trade,
+                    )
+        except Exception:
+            # Never let normalization raise — it's only advisory.
+            pass
         before_total_trades = int(agent.total_trades or 0)
         ai_used = False
 
