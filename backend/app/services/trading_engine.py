@@ -1020,9 +1020,52 @@ class TradingEngine:
         position.current_price = last_price
         position.unrealized_pnl = gross
         position.unrealized_pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
+        position.updated_at = datetime.now(timezone.utc)
         await position.save()
 
-        trade = await Trade.get(position.trade_id)
+        trade = None
+        if position.trade_id is not None:
+            try:
+                trade = await Trade.find_one(Trade.id == position.trade_id)
+            except Exception:
+                trade = None
+
+        if trade is None:
+            trade = await Trade.find_one(
+                Trade.agent_id == agent.id,
+                Trade.symbol == position.symbol,
+                Trade.status == "open",
+                Trade.side == ("buy" if position.side == "long" else "sell"),
+                Trade.entry_price == entry_price,
+            )
+            if trade:
+                logger.warning(
+                    "agent {} closing position {}: fallback matched open trade id={} by agent/symbol/entry",
+                    agent.id,
+                    position.id,
+                    trade.id,
+                )
+                if position.trade_id != trade.id:
+                    position.trade_id = trade.id
+                    await position.save()
+
+        if trade is None:
+            trade = await Trade.find_one(
+                Trade.agent_id == agent.id,
+                Trade.symbol == position.symbol,
+                Trade.status == "open",
+            )
+            if trade:
+                logger.warning(
+                    "agent {} closing position {}: fallback matched open trade id={} by agent/symbol",
+                    agent.id,
+                    position.id,
+                    trade.id,
+                )
+                if position.trade_id != trade.id:
+                    position.trade_id = trade.id
+                    await position.save()
+
         if trade:
             trade.exit_price = last_price
             trade.pnl = gross
@@ -1031,6 +1074,13 @@ class TradingEngine:
             trade.closed_at = datetime.now(timezone.utc)
             trade.notes = reason
             await trade.save()
+        else:
+            logger.warning(
+                "agent {} closing position {}: no matching trade record found for trade_id=%s symbol=%s",
+                agent.id,
+                position.trade_id,
+                position.symbol,
+            )
 
         agent.total_pnl = float(agent.total_pnl or 0) + gross
         agent.current_day_pnl = float(agent.current_day_pnl or 0) + gross

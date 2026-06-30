@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from app.services.exchange.base import ExchangeError
+import app.services.trading_engine as trading_engine
 from app.services.trading_engine import TradingEngine
 
 
@@ -52,6 +53,7 @@ def test_persist_open_trade_creates_trade_and_position(monkeypatch):
     class DummyPositionDoc:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.id = "position-1"
 
         async def insert(self):
             inserted.append(("position", self.kwargs))
@@ -108,6 +110,104 @@ def test_persist_open_trade_creates_trade_and_position(monkeypatch):
     assert any(kind == "position" for kind, _ in inserted)
 
 
+def test_close_position_links_fallback_trade_when_trade_id_missing(monkeypatch):
+    saved = {"position": 0, "trade": 0}
+
+    class DummyAgent:
+        def __init__(self):
+            self.id = "agent-1"
+            self.user_id = "user-1"
+            self.name = "TEST AGENT"
+            self.is_paper_trade = True
+            self.total_pnl = 0.0
+            self.current_day_pnl = 0.0
+            self.current_week_pnl = 0.0
+            self.winning_trades = 0
+
+        async def save(self):
+            pass
+
+    class DummyApiKey:
+        exchange = "bybit"
+
+    class DummyPositionDoc:
+        def __init__(self):
+            self.id = "pos-1"
+            self.user_id = "user-1"
+            self.agent_id = "agent-1"
+            self.trade_id = None
+            self.exchange = "bybit"
+            self.symbol = "BTCUSDT"
+            self.side = "long"
+            self.quantity = 0.01
+            self.entry_price = 100.0
+            self.current_price = None
+            self.stop_loss = None
+            self.take_profit = None
+            self.opened_at = None
+            self.updated_at = None
+            self.unrealized_pnl = 0.0
+            self.unrealized_pnl_pct = 0.0
+            self.is_open = True
+
+        async def save(self):
+            saved["position"] += 1
+
+    class DummyField:
+        def __init__(self, name: str):
+            self.name = name
+
+        def __eq__(self, other):
+            return self
+
+    class DummyTradeClass:
+        agent_id = DummyField("agent_id")
+        symbol = DummyField("symbol")
+        status = DummyField("status")
+        side = DummyField("side")
+        entry_price = DummyField("entry_price")
+
+        @staticmethod
+        async def find_one(*args, **kwargs):
+            return DummyTrade(
+                user_id="user-1",
+                agent_id="agent-1",
+                symbol="BTCUSDT",
+                side="buy",
+                status="open",
+                entry_price=100.0,
+            )
+
+    class DummyTrade:
+        id = "trade-1"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.status = "open"
+
+        async def save(self):
+            saved["trade"] += 1
+
+    async def fake_notification_create(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.trading_engine.Trade", DummyTradeClass)
+    monkeypatch.setattr("app.services.trading_engine.NotificationService.create", fake_notification_create)
+
+    engine = TradingEngine()
+    agent = DummyAgent()
+    api_key = DummyApiKey()
+    position = DummyPositionDoc()
+
+    asyncio.run(
+        engine._close_position(agent, api_key, SimpleNamespace(), position, 101.0, "closing test")
+    )
+
+    assert position.trade_id == "trade-1"
+    assert saved["position"] >= 1
+    assert saved["trade"] == 1
+
+
 def test_open_position_returns_latest_open_position(monkeypatch):
     latest = SimpleNamespace(symbol="BTCUSDT", is_open=True, opened_at=2)
     older = SimpleNamespace(symbol="BTCUSDT", is_open=True, opened_at=1)
@@ -145,10 +245,13 @@ def test_adjust_quantity_for_exchange_uses_bitget_step_and_minimum():
             return [{"symbol": "BTCUSDT", "sizeIncrement": "0.01", "minTradeNum": "0.01"}]
 
     engine = TradingEngine()
-    adjusted_qty, exchange_min = asyncio.run(engine._adjust_quantity_for_exchange(DummyBitgetClient(), "BTCUSDT", 0.0032))
+    adjusted_qty, exchange_min, price_tick = asyncio.run(
+        engine._adjust_quantity_for_exchange(DummyBitgetClient(), "BTCUSDT", 0.0032)
+    )
 
     assert adjusted_qty == 0.01
     assert exchange_min == 0.01
+    assert price_tick is None
 
 
 def test_run_agent_tick_removes_deleted_bitget_symbol(monkeypatch):
