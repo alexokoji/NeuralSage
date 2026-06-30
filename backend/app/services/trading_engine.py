@@ -393,11 +393,21 @@ class TradingEngine:
 
         step = _first_numeric("sizeIncrement", "qtyStep", "step", "minTradeNum")
         min_order = _first_numeric("minTradeNum", "minTradeAmount", "minOrderSize", "minSize", "minQty", "minOrderQty")
+        # Try to extract price tick / price increment for rounding SL/TP
+        price_tick = _first_numeric(
+            "priceTick",
+            "priceIncrement",
+            "tickSize",
+            "priceStep",
+            "minPrice",
+            "tick",
+        )
         if step is None:
             step = 1.0
         if min_order is None:
             min_order = step
-        return step, min_order
+        # If price_tick not found, default to None (caller may ignore)
+        return step, min_order, price_tick
 
     async def _adjust_quantity_for_exchange(self, client, symbol: str, qty: float) -> tuple[float, float]:
         """Query the exchange for lot/step info and return (adjusted_qty, exchange_min_qty).
@@ -416,7 +426,7 @@ class TradingEngine:
                 if contract is None and items:
                     contract = items[0]
                 if contract:
-                    step, min_order = self._coerce_step_and_minimum(contract)
+                    step, min_order, price_tick = self._coerce_step_and_minimum(contract)
                     if step > 0:
                         from decimal import Decimal, ROUND_DOWN
 
@@ -427,10 +437,10 @@ class TradingEngine:
                         if adj <= 0 and min_order > 0:
                             adj = float(min_order)
                         exchange_min = max(float(min_order), self._min_qty_for(symbol, exchange=exchange_name))
-                        return adj, exchange_min
+                        return adj, exchange_min, price_tick
             except Exception:
                 pass
-            return max(qty, self._min_qty_for(symbol, exchange=exchange_name)), self._min_qty_for(symbol, exchange=exchange_name)
+            return max(qty, self._min_qty_for(symbol, exchange=exchange_name)), self._min_qty_for(symbol, exchange=exchange_name), None
 
         try:
             res = await client._signed("GET", "/v5/market/instruments-info", params={"category": "linear", "symbol": symbol})
@@ -440,25 +450,32 @@ class TradingEngine:
                 lot = inst.get("lotSizeFilter") or {}
                 step = float(lot.get("qtyStep") or 0) or 0.0
                 min_order = float(lot.get("minOrderQty") or 0) or 0.0
-                if step > 0:
-                    from decimal import Decimal, ROUND_DOWN
+                if items:
+                    inst = items[0]
+                    lot = inst.get("lotSizeFilter") or {}
+                    step = float(lot.get("qtyStep") or 0) or 0.0
+                    min_order = float(lot.get("minOrderQty") or 0) or 0.0
+                    # try to extract price tick
+                    pf = inst.get("priceFilter") or {}
+                    price_tick = None
+                    try:
+                        price_tick = float(pf.get("tickSize") or pf.get("priceTick") or pf.get("priceIncrement") or 0) or None
+                    except Exception:
+                        price_tick = None
+                    if step > 0:
+                        from decimal import Decimal, ROUND_DOWN
 
-                    dec_qty = Decimal(str(qty))
-                    dec_step = Decimal(str(step))
-                    steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
-                    adj = float((steps * dec_step))
-                    # If adjusted quantity is zero, fall back to min_order
-                    if adj <= 0 and min_order > 0:
-                        adj = float(min_order)
-                    exchange_min = min_order if min_order > 0 else self._min_qty_for(symbol)
-                    return adj, exchange_min
-        except Exception:
-            pass
-        # Fallbacks
-        return qty, self._min_qty_for(symbol)
+                        dec_qty = Decimal(str(qty))
+                        dec_step = Decimal(str(step))
+                        steps = (dec_qty / dec_step).to_integral_value(rounding=ROUND_DOWN)
+                        adj = float((steps * dec_step))
+                        # If adjusted quantity is zero, fall back to min_order
+                        if adj <= 0 and min_order > 0:
+                            adj = float(min_order)
+                        exchange_min = min_order if min_order > 0 else self._min_qty_for(symbol)
 
-    @staticmethod
-    def _is_forex(exchange: str) -> bool:
+                        return adj, exchange_min, price_tick
+                return max(qty, self._min_qty_for(symbol)), self._min_qty_for(symbol), None
         return exchange.startswith("mt5") or exchange.startswith("deriv") or exchange.startswith("oanda")
 
     @staticmethod
@@ -610,9 +627,9 @@ class TradingEngine:
             qty = decision.sized_quantity
             # Ask the exchange for instrument step/min info and adjust qty accordingly.
             logger.debug("agent {} {} asking exchange for lot/step info for qty={}", agent.id, symbol, qty)
-            adj_qty, exchange_min = await self._adjust_quantity_for_exchange(client, symbol, qty)
-            logger.debug("agent {} {} exchange response: adj_qty={} exchange_min={}", 
-                         agent.id, symbol, adj_qty, exchange_min)
+            adj_qty, exchange_min, price_tick = await self._adjust_quantity_for_exchange(client, symbol, qty)
+            logger.debug("agent {} {} exchange response: adj_qty={} exchange_min={} price_tick={}", 
+                         agent.id, symbol, adj_qty, exchange_min, price_tick)
             if adj_qty < exchange_min:
                 msg = (
                     f"position size {qty:.6f} adjusted to {adj_qty:.6f} below exchange minimum {exchange_min} for {symbol}. "
@@ -631,10 +648,34 @@ class TradingEngine:
                 return
             # Use adjusted qty for placement
             qty = adj_qty
-            logger.info("agent {} {} PLACING ORDER: symbol={} side={} qty={} entry={} SL={}% TP={}%", 
-                        agent.id, symbol, symbol, side, qty, last_price, sl_pct, tp_pct)
 
-            # Place the order through the exchange client.
+            # Compute explicit SL/TP prices and quantize them to the instrument price tick when available
+            from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+            def _quantize_price(val: float, tick: float | None, rounding):
+                if tick is None:
+                    return float(round(val, 8))
+                dec = Decimal(str(val))
+                quantum = Decimal(str(tick))
+                return float(dec.quantize(quantum, rounding=rounding))
+
+            # raw prices
+            raw_sl = (last_price * (1 - sl_pct / 100)) if side == "long" else (last_price * (1 + sl_pct / 100))
+            raw_tp = (last_price * (1 + tp_pct / 100)) if side == "long" else (last_price * (1 - tp_pct / 100))
+
+            # For longs: SL (below) -> ROUND_DOWN, TP (above) -> ROUND_UP
+            # For shorts: SL (above) -> ROUND_UP, TP (below) -> ROUND_DOWN
+            if side == "long":
+                sl_price = _quantize_price(raw_sl, price_tick, ROUND_DOWN)
+                tp_price = _quantize_price(raw_tp, price_tick, ROUND_UP)
+            else:
+                sl_price = _quantize_price(raw_sl, price_tick, ROUND_UP)
+                tp_price = _quantize_price(raw_tp, price_tick, ROUND_DOWN)
+
+            logger.info("agent {} {} PLACING ORDER: symbol={} side={} qty={} entry={} SL={} TP={}", 
+                        agent.id, symbol, symbol, side, qty, last_price, sl_price, tp_price)
+
+            # Place the order through the exchange client; pass explicit rounded SL/TP
             await self._open_trade(
                 agent=agent,
                 api_key=api_key,
@@ -653,6 +694,8 @@ class TradingEngine:
                     "sl_pct": sl_pct,
                     "tp_pct": tp_pct,
                 },
+                stop_loss_price=sl_price,
+                take_profit_price=tp_price,
             )
             logger.debug("agent {} {} _open_trade completed", agent.id, symbol)
         positions = await Position.find(
@@ -833,16 +876,19 @@ class TradingEngine:
         take_profit_pct: float,
         signal,
         risk_payload: dict[str, Any],
+        stop_loss_price: float | None = None,
+        take_profit_price: float | None = None,
     ) -> None:
+        # Allow callers to pass explicit rounded prices (recommended).
         sl_price = (
-            entry_price * (1 - stop_loss_pct / 100)
-            if side == "long"
-            else entry_price * (1 + stop_loss_pct / 100)
+            stop_loss_price
+            if stop_loss_price is not None
+            else (entry_price * (1 - stop_loss_pct / 100) if side == "long" else entry_price * (1 + stop_loss_pct / 100))
         )
         tp_price = (
-            entry_price * (1 + take_profit_pct / 100)
-            if side == "long"
-            else entry_price * (1 - take_profit_pct / 100)
+            take_profit_price
+            if take_profit_price is not None
+            else (entry_price * (1 + take_profit_pct / 100) if side == "long" else entry_price * (1 - take_profit_pct / 100))
         )
 
         order = OrderRequest(
