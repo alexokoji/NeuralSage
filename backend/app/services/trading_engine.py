@@ -361,6 +361,12 @@ class TradingEngine:
     # Forex pairs have different minimums (in units of base currency)
     _FOREX_MIN_QTY = 1  # OANDA allows 1 unit minimum
 
+    @staticmethod
+    def _is_forex(exchange: str | None) -> bool:
+        if not exchange:
+            return False
+        return str(exchange).strip().lower() in {"oanda", "mt5", "forex", "fx"}
+
     @classmethod
     def _min_qty_for(cls, symbol: str, exchange: str = "", side: str | None = None) -> float:
         if cls._is_forex(exchange):
