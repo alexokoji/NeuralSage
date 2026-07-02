@@ -24,9 +24,16 @@ router = APIRouter()
 @router.get("", response_model=list[TradePublic])
 async def list_trades(
     limit: int = Query(default=50, ge=1, le=200),
+    status: str | None = Query(default=None),
     user: User = Depends(get_current_user),
 ):
-    return await Trade.find(Trade.user_id == user.id).sort(-Trade.created_at).limit(limit).to_list()
+    query_status = status or "filled"
+    if query_status == "all":
+        return await Trade.find(Trade.user_id == user.id).sort(-Trade.created_at).limit(limit).to_list()
+    return await Trade.find(
+        Trade.user_id == user.id,
+        Trade.status == query_status,
+    ).sort(-Trade.created_at).limit(limit).to_list()
 
 
 @router.get("/positions", response_model=list[PositionPublic])
@@ -88,6 +95,39 @@ async def place_manual_order(
     )
     await trade.insert()
     return trade
+
+
+@router.post("/cleanup-stale", status_code=status.HTTP_200_OK)
+async def cleanup_stale_trades(user: User = Depends(get_current_user)):
+    """Mark open trades that have no matching open position as cancelled.
+
+    Safe to call multiple times. Removes ghost records left by bugs.
+    """
+    from datetime import timedelta
+    open_trades = await Trade.find(
+        Trade.user_id == user.id,
+        Trade.status == "open",
+    ).to_list()
+
+    open_position_trade_ids = {
+        str(p.trade_id)
+        for p in await Position.find(
+            Position.user_id == user.id,
+            Position.is_open == True,  # noqa: E712
+        ).to_list()
+        if p.trade_id
+    }
+
+    purged = 0
+    for t in open_trades:
+        if str(t.id) not in open_position_trade_ids:
+            t.status = "cancelled"
+            t.closed_at = datetime.now(timezone.utc)
+            t.notes = "auto-cancelled: no matching open position"
+            await t.save()
+            purged += 1
+
+    return {"purged": purged, "remaining_open": len(open_trades) - purged}
 
 
 @router.post("/{trade_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
