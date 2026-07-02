@@ -298,22 +298,30 @@ class BitgetClient(ExchangeClient):
         return out
 
     async def set_leverage(self, symbol: str, leverage: int, side: str = "long") -> None:
-        """Set futures leverage for a symbol before placing an order."""
+        """Set futures leverage for a symbol before placing an order.
+
+        Bitget hedge mode requires holdSide; one-way mode rejects it.
+        Try hedge mode first, fall back to one-way (no holdSide).
+        """
+        base = {
+            "productType": "USDT-FUTURES",
+            "marginCoin": "USDT",
+            "symbol": symbol,
+            "leverage": str(leverage),
+        }
+        # Hedge mode: set leverage for both sides.
+        for hold_side in (side, "long" if side == "short" else "short"):
+            try:
+                await self._signed("POST", "/api/v2/mix/account/set-leverage",
+                                   body={**base, "holdSide": hold_side})
+            except Exception:
+                pass
+        # One-way mode fallback: no holdSide.
         try:
-            await self._signed(
-                "POST",
-                "/api/v2/mix/account/set-leverage",
-                body={
-                    "productType": "USDT-FUTURES",
-                    "marginCoin": "USDT",
-                    "symbol": symbol,
-                    "leverage": str(leverage),
-                    "holdSide": side,
-                },
-            )
+            await self._signed("POST", "/api/v2/mix/account/set-leverage", body=base)
+            logger.info("bitget set_leverage {}/{}x ok", symbol, leverage)
         except Exception as exc:
-            # Non-fatal — if leverage is already set this may return an error
-            logger.debug("bitget set_leverage {}/{} ignored: {}", symbol, leverage, exc)
+            logger.info("bitget set_leverage {}/{}x: {}", symbol, leverage, exc)
 
     async def get_positions(self) -> list[dict[str, Any]]:
         """Return currently open USDT-FUTURES positions from Bitget."""

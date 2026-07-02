@@ -295,6 +295,11 @@ class TradingEngine:
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
 
         finally:
+            # Reconcile before closing the client so get_positions still works.
+            try:
+                await self._reconcile_open_positions(agent, api_key, client)
+            except Exception as exc:
+                logger.debug("agent {} reconciliation failed: {}", agent.id, exc)
             await client.close()
 
         pairs_checked = len(agent.trading_pairs or [])
@@ -330,7 +335,6 @@ class TradingEngine:
                 pass
 
         await agent.save()
-        # Emit concise per-agent metric for observability
         trades_opened = int(agent.total_trades or 0) - before_total_trades
         candidates_checked = len(agent.trading_pairs or [])
         signals_emitted = len(signals_summary)
@@ -342,12 +346,6 @@ class TradingEngine:
             trades_opened,
             ai_used,
         )
-        # Reconcile live open positions so the agent can observe unrealized P&L
-        try:
-            await self._reconcile_open_positions(agent, api_key, client)
-        except Exception as exc:
-            logger.debug("agent {} reconciliation failed: {}", agent.id, exc)
-
         return {"ok": True}
 
     # Bybit SELL order minimum quantities (per symbol base currency)
@@ -1091,7 +1089,7 @@ class TradingEngine:
                 try:
                     balances = await client.get_balances()
                     avail = max((b.available for b in balances), default=0.0)
-                    max_notional = avail * leverage
+                    max_notional = avail * leverage * 0.90  # 10% buffer for fees/margin
                     notional = quantity * entry_price
                     if notional > max_notional and max_notional > 0:
                         capped_qty = max_notional / entry_price
