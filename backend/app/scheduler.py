@@ -58,7 +58,7 @@ def start() -> None:
     )
     sched.add_job(
         reconcile_exchange_positions,
-        IntervalTrigger(minutes=2),
+        IntervalTrigger(minutes=5),
         id="exchange_reconciliation",
         max_instances=1,
         coalesce=True,

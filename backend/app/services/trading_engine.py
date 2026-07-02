@@ -520,11 +520,14 @@ class TradingEngine:
         return positions[0] if positions else None
 
     async def _reconcile_open_positions(self, agent: Agent, api_key, client) -> None:
-        """Fetch current prices for open positions and update unrealized P&L.
+        """Sync open positions every tick — mirrors paper trading's SL/TP cadence.
 
-        This keeps `Position.current_price`, `unrealized_pnl` and
-        `unrealized_pnl_pct` up-to-date so the agent and LearningService have
-        accurate, timely signals about live trade performance.
+        For live agents:
+          1. Ask the exchange which positions are still open.
+          2. Any DB position no longer on the exchange was closed server-side
+             (SL/TP triggered, liquidation, manual close).  Fetch the real fill
+             price from order history and close it properly — same path as paper.
+          3. For still-open positions update unrealized P&L from latest candle.
         """
         positions = await Position.find(
             Position.agent_id == agent.id,
@@ -533,17 +536,55 @@ class TradingEngine:
         if not positions:
             return
 
-        for pos in positions:
+        # ── For live agents: detect exchange-closed positions every tick ──────
+        exchange_symbols: set[str] = set()
+        closed_orders_by_symbol: dict[str, list[dict]] = {}
+        exchange_query_ok = False
+
+        if not agent.is_paper_trade:
             try:
-                # Use a short candles request for fresh price
+                exchange_positions = await client.get_positions() or []
+                exchange_symbols = {
+                    str(p.get("symbol") or "").upper()
+                    for p in exchange_positions
+                    if p and str(p.get("symbol") or "").strip()
+                }
+                exchange_query_ok = True
+            except AttributeError:
+                pass  # exchange doesn't support get_positions
+            except Exception as exc:
+                logger.debug("agent {} get_positions failed in reconcile: {}", agent.id, exc)
+
+            if exchange_query_ok:
+                # Pre-fetch last 2 h of closed orders to resolve fill prices.
+                try:
+                    import time as _time
+                    lookback_ms = int((_time.time() - 7_200) * 1000)
+                    raw_closed = await client.get_closed_orders(limit=50, start_ms=lookback_ms)
+                    for o in raw_closed:
+                        closed_orders_by_symbol.setdefault(o["symbol"], []).append(o)
+                except AttributeError:
+                    pass
+                except Exception as exc:
+                    logger.debug("agent {} get_closed_orders failed: {}", agent.id, exc)
+
+        for pos in positions:
+            # ── Detect exchange-side closure (live trades only) ───────────────
+            if not agent.is_paper_trade and exchange_query_ok:
+                if str(pos.symbol).upper() not in exchange_symbols:
+                    await self._close_position_from_exchange(
+                        agent, api_key, pos, closed_orders_by_symbol
+                    )
+                    continue  # position is now closed — skip price update
+
+            # ── Update unrealized P&L for still-open positions ────────────────
+            try:
                 raw = await client.get_candles(pos.symbol, agent.timeframe or "5m", limit=2)
                 if raw:
                     from app.services.strategy.indicators import candles_to_df
-
                     df = candles_to_df(raw)
                     current = float(df["close"].iloc[-1])
                 else:
-                    # Fallback to last stored price
                     current = float(pos.current_price or pos.entry_price)
             except Exception:
                 current = float(pos.current_price or pos.entry_price)
@@ -561,7 +602,6 @@ class TradingEngine:
                 pos.updated_at = datetime.now(timezone.utc)
                 await pos.save()
 
-                # Also annotate the open trade (if linked) with an update note
                 if pos.trade_id:
                     try:
                         trade = await Trade.find_one(Trade.id == pos.trade_id)
@@ -572,6 +612,111 @@ class TradingEngine:
                         pass
             except Exception:
                 logger.debug("agent {} failed to reconcile position {}", agent.id, pos.id)
+
+    async def _close_position_from_exchange(
+        self,
+        agent: Agent,
+        api_key,
+        pos: "Position",
+        closed_orders_by_symbol: dict[str, list[dict]],
+    ) -> None:
+        """Close a DB position that the exchange already closed server-side.
+
+        Resolves the actual exit fill price from order history then mirrors
+        exactly what _close_position does for paper trades: persists PnL,
+        updates agent counters, and feeds the learning system.
+        """
+        entry_price = float(pos.entry_price)
+        qty = float(pos.quantity or 0)
+
+        # Match fill: try exact order_id first, then symbol+qty proximity.
+        sym_orders = closed_orders_by_symbol.get(str(pos.symbol).upper(), [])
+        actual_fill: dict | None = None
+        linked_oid: str = ""
+        if pos.trade_id:
+            try:
+                linked_trade = await Trade.find_one(Trade.id == pos.trade_id)
+                linked_oid = str(linked_trade.exchange_order_id or "") if linked_trade else ""
+            except Exception:
+                pass
+        if linked_oid:
+            actual_fill = next((o for o in sym_orders if o["order_id"] == linked_oid), None)
+        if actual_fill is None and sym_orders:
+            qty_matches = [
+                o for o in sym_orders
+                if abs(o["filled_qty"] - qty) / max(qty, 1e-9) < 0.05
+            ]
+            if qty_matches:
+                actual_fill = max(qty_matches, key=lambda o: o["closed_at_ms"])
+
+        if actual_fill and actual_fill["avg_fill_price"] > 0:
+            exit_price = actual_fill["avg_fill_price"]
+            gross = actual_fill["pnl"] if actual_fill["pnl"] != 0 else (
+                (exit_price - entry_price) * qty * (1 if pos.side == "long" else -1)
+            )
+            price_source = "exchange_fill"
+        else:
+            exit_price = float(pos.current_price or entry_price)
+            gross = (exit_price - entry_price) * qty
+            if pos.side == "short":
+                gross = -gross
+            price_source = "candle_estimate"
+
+        # Persist the closure.
+        pos.is_open = False
+        pos.current_price = exit_price
+        pos.unrealized_pnl = gross
+        pos.updated_at = datetime.now(timezone.utc)
+        await pos.save()
+
+        if pos.trade_id:
+            try:
+                trade = await Trade.find_one(Trade.id == pos.trade_id)
+                if trade and trade.status == "open":
+                    trade.exit_price = exit_price
+                    trade.pnl = gross
+                    trade.pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
+                    trade.status = "filled"
+                    trade.closed_at = datetime.now(timezone.utc)
+                    trade.notes = f"closed by exchange (price_source={price_source})"
+                    await trade.save()
+            except Exception:
+                pass
+
+        # Update agent counters — same as _close_position.
+        agent.total_pnl = float(agent.total_pnl or 0) + gross
+        agent.current_day_pnl = float(agent.current_day_pnl or 0) + gross
+        agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
+        if gross > 0:
+            agent.winning_trades = (agent.winning_trades or 0) + 1
+
+        # Feed the learning system.
+        try:
+            from app.services.learning import LearningService
+            strategy_type = agent.strategy.type if agent.strategy else None
+            if strategy_type:
+                await LearningService.record_trade_outcome(
+                    agent_id=agent.id,
+                    strategy_type=strategy_type,
+                    symbol=pos.symbol,
+                    timeframe=agent.timeframe,
+                    pnl=gross,
+                )
+        except Exception:
+            pass
+
+        await NotificationService.create(
+            user_id=agent.user_id,
+            type="trade_closed",
+            title=f"{agent.name} closed {pos.side} {pos.symbol}",
+            message=f"PnL {gross:+.4f} (closed by exchange, {price_source})",
+            data={"agent_id": str(agent.id), "trade_id": str(pos.trade_id)},
+        )
+
+        logger.info(
+            "agent {} {} position closed by exchange: side={} pnl={:.4f} exit={} source={}",
+            agent.id, pos.symbol, pos.side, gross, exit_price, price_source,
+        )
 
     async def _tick_symbol_ai(self, agent: Agent, api_key, strategy, client, symbol: str, df, screener_signal, open_position) -> None:
         """Process a symbol with AI analysis — called for top candidates only."""
