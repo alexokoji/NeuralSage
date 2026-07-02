@@ -154,7 +154,8 @@ export const api = {
     request<Agent>('POST', `/api/v1/agents/${id}/control`, { action }),
 
   // ----- trades -----
-  listTrades: (limit = 50) => request<Trade[]>('GET', `/api/v1/trades?limit=${limit}`),
+  listTrades: (limit = 50, status?: string) =>
+    request<Trade[]>('GET', `/api/v1/trades?limit=${limit}${status ? `&status=${status}` : ''}`),
   listPositions: () => request<Position[]>('GET', '/api/v1/trades/positions'),
   cancelTrade: (id: string) => request<void>('POST', `/api/v1/trades/${id}/cancel`),
 
