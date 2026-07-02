@@ -45,6 +45,8 @@ async def overview(user: User = Depends(get_current_user)) -> PortfolioOverview:
             fetch_error = str(exc)
             k.balance_cache = {"error": fetch_error}
             await k.save()
+        except ValueError:
+            continue  # exchange not supported by this backend (e.g. MT5)
 
         if fetch_error:
             exchanges.append(
