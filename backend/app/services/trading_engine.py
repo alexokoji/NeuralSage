@@ -705,13 +705,20 @@ class TradingEngine:
                 if abs(o["filled_qty"] - qty) / max(qty, 1e-9) < 0.05
             ]
             if qty_matches:
-                actual_fill = max(qty_matches, key=lambda o: o["closed_at_ms"])
+                # Prefer closing orders (tradeSide=="close") over opening orders
+                # so we match the SL/TP fill, not the entry.
+                close_orders = [o for o in qty_matches if o.get("trade_side") == "close"]
+                pool = close_orders if close_orders else qty_matches
+                actual_fill = max(pool, key=lambda o: o["closed_at_ms"])
 
         if actual_fill and actual_fill["avg_fill_price"] > 0:
             exit_price = actual_fill["avg_fill_price"]
-            gross = actual_fill["pnl"] if actual_fill["pnl"] != 0 else (
-                (exit_price - entry_price) * qty * (1 if pos.side == "long" else -1)
-            )
+            if actual_fill["pnl"] != 0:
+                gross = actual_fill["pnl"]
+            else:
+                # Exchange PnL missing — estimate from prices (excludes fees;
+                # will be slightly optimistic but directionally correct)
+                gross = (exit_price - entry_price) * qty * (1 if pos.side == "long" else -1)
             price_source = "exchange_fill"
         else:
             exit_price = float(pos.current_price or entry_price)

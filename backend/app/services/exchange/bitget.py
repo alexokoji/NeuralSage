@@ -417,9 +417,10 @@ class BitgetClient(ExchangeClient):
                 "order_id": str(o.get("orderId") or ""),
                 "client_order_id": str(o.get("clientOid") or ""),
                 "side": str(o.get("side") or "").lower(),
+                "trade_side": str(o.get("tradeSide") or "").lower(),  # "open" or "close"
                 "avg_fill_price": float(o.get("priceAvg") or o.get("price") or 0),
                 "filled_qty": float(o.get("baseVolume") or o.get("filledQty") or 0),
-                "pnl": float(o.get("profit") or o.get("realizedPnl") or 0),
+                "pnl": float(o.get("profit") or o.get("realizedPnl") or o.get("totalProfits") or 0),
                 "status": status_raw,
                 "closed_at_ms": int(o.get("uTime") or o.get("cTime") or 0),
             })
