@@ -130,8 +130,10 @@ class BitgetPrivateStream:
         # Wait for login ack (with timeout)
         for _ in range(5):
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            logger.debug("bitget_ws [{}] auth recv: {}", self._key_id, raw[:200] if isinstance(raw, str) else raw)
             msg = json.loads(raw) if raw != "pong" else {}
-            if msg.get("event") == "login" and msg.get("code") == "0":
+            code = msg.get("code")
+            if msg.get("event") == "login" and str(code) == "0":
                 logger.debug("bitget_ws [{}] authenticated", self._key_id)
                 return
             if msg.get("event") == "error":
