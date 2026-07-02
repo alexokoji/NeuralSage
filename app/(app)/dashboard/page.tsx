@@ -33,7 +33,7 @@ import {
   useTrades,
 } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
-import type { Agent, Trade } from '@/lib/api/types';
+import type { Agent, AgentTrend, Trade } from '@/lib/api/types';
 
 const AIAssistant = dynamic(
   () => import('@/components/trading/ai-assistant').then(m => m.AIAssistant),
@@ -96,14 +96,28 @@ function buildPortfolioSeries(
   });
 }
 
-function buildAgentSeries(agents: Agent[]) {
+function buildAgentSeries(trends: AgentTrend[], agents: Agent[]) {
+  // Use real daily snapshots when available.
+  if (trends.length > 0) {
+    const allDates = Array.from(
+      new Set(trends.flatMap(t => t.points.map(p => p.date))),
+    ).sort();
+    return allDates.map(date => {
+      const point: Record<string, number | string> = {
+        date: date.slice(5), // "MM-DD" from "YYYY-MM-DD"
+      };
+      for (const trend of trends.slice(0, 3)) {
+        const snap = trend.points.find(p => p.date === date);
+        point[trend.agent_name] = snap ? snap.daily_pnl_pct : 0;
+      }
+      return point;
+    });
+  }
+  // Fallback: flat zero line (no fake random data).
   const top = agents.slice(0, 3);
   return Array.from({ length: 7 }).map((_, i) => {
     const point: Record<string, number | string> = { date: `Day ${i + 1}` };
-    top.forEach((a, idx) => {
-      const seed = (a.id.charCodeAt(0) || 0) + i * (idx + 1);
-      point[a.name || `agent${idx + 1}`] = ((seed % 9) - 4) * 0.4;
-    });
+    top.forEach(a => { point[a.name || 'agent'] = 0; });
     return point;
   });
 }
@@ -112,6 +126,7 @@ export default function DashboardPage() {
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | 'all'>('7d');
   const { data: portfolio } = usePolling(() => api.portfolioOverview(), 5000);
   const { data: trades } = usePolling(() => api.listTrades(50), 10000);
+  const { data: agentTrendsData } = usePolling(() => api.agentTrends(7), 60000);
   const { data: agents } = useAgents();
   const { data: tickers } = useTickers();
 
@@ -128,7 +143,11 @@ export default function DashboardPage() {
     () => buildPortfolioSeries(trades ?? [], totalBalance || 10000),
     [trades, totalBalance],
   );
-  const agentSeries = useMemo(() => buildAgentSeries(agents ?? []), [agents]);
+  const agentTrends = agentTrendsData?.trends ?? [];
+  const agentSeries = useMemo(
+    () => buildAgentSeries(agentTrends, agents ?? []),
+    [agentTrends, agents],
+  );
   const recentTrades = (trades ?? []).slice(0, 6);
 
   return (
@@ -197,6 +216,37 @@ export default function DashboardPage() {
           iconColor="text-orange-400"
         />
       </div>
+
+      {(portfolio?.exchanges ?? []).filter(e => !e.error && e.balances.length > 0).length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {(portfolio?.exchanges ?? [])
+            .filter(e => !e.error && e.balances.length > 0)
+            .map(ex => (
+              <div key={ex.api_key_id} className="bg-card border border-border rounded-xl p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold capitalize text-muted-foreground">
+                    {ex.exchange}{ex.is_testnet ? ' (testnet)' : ''}
+                  </p>
+                  <span className="w-2 h-2 rounded-full bg-green-400" />
+                </div>
+                {ex.balances.map(b => (
+                  <div key={b.asset} className="flex items-end justify-between">
+                    <div>
+                      <p className="text-lg font-bold font-mono">{Number(b.total).toFixed(2)}</p>
+                      <p className="text-[10px] text-muted-foreground">{b.asset} total</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs font-mono text-muted-foreground">{Number(b.available).toFixed(2)} avail</p>
+                      {b.usd_value != null && (
+                        <p className="text-[10px] text-cyan-400">${Number(b.usd_value).toFixed(2)} USD</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 bg-card border border-border rounded-xl p-5 space-y-4">
@@ -302,7 +352,9 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 bg-card border border-border rounded-xl p-5 space-y-4">
-          <p className="text-sm font-semibold">Agent Daily Trend (synthetic preview)</p>
+          <p className="text-sm font-semibold">
+            Agent Daily Trend{agentTrends.length === 0 ? ' (no snapshots yet)' : ''}
+          </p>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={agentSeries}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 12% 14%)" />
@@ -319,11 +371,11 @@ export default function DashboardPage() {
                 tickFormatter={v => `${v}%`}
               />
               <Tooltip content={<CustomTooltip />} />
-              {(agents ?? []).slice(0, 3).map((a, idx) => (
+              {(agentTrends.length > 0 ? agentTrends : (agents ?? []).map(a => ({ agent_id: a.id, agent_name: a.name || 'agent', points: [] }))).slice(0, 3).map((t, idx) => (
                 <Line
-                  key={a.id}
+                  key={t.agent_id}
                   type="monotone"
-                  dataKey={a.name || `agent${idx + 1}`}
+                  dataKey={t.agent_name}
                   stroke={
                     idx === 0
                       ? 'hsl(199 89% 48%)'
@@ -333,14 +385,16 @@ export default function DashboardPage() {
                   }
                   strokeWidth={2}
                   dot={false}
-                  name={a.name}
+                  name={t.agent_name}
                 />
               ))}
             </LineChart>
           </ResponsiveContainer>
-          <p className="text-[10px] text-muted-foreground">
-            Real per-agent equity curves populate once daily snapshots are generated.
-          </p>
+          {agentTrends.length === 0 && (
+            <p className="text-[10px] text-muted-foreground">
+              Real per-agent daily P&L populates once agents complete their first trading day.
+            </p>
+          )}
         </div>
 
         <div className="bg-card border border-border rounded-xl p-5 space-y-3">

@@ -6,10 +6,14 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
 from app.models.agent import Agent
+from app.models.agent_performance import AgentPerformance
 from app.models.api_key import ApiKey
 from app.models.position import Position
 from app.models.user import User
 from app.schemas.portfolio import (
+    AgentDayPoint,
+    AgentTrend,
+    AgentTrendsResponse,
     BalanceEntry,
     ExchangeBalance,
     PortfolioOverview,
@@ -99,3 +103,41 @@ async def overview(user: User = Depends(get_current_user)) -> PortfolioOverview:
         active_agents_count=int(active_agents_count),
         exchanges=exchanges,
     )
+
+
+@router.get("/agent-trends", response_model=AgentTrendsResponse)
+async def agent_trends(
+    days: int = 7,
+    user: User = Depends(get_current_user),
+) -> AgentTrendsResponse:
+    """Return per-agent daily PnL for the last N days from AgentPerformance snapshots."""
+    from datetime import date, timedelta
+
+    cutoff = date.today() - timedelta(days=days - 1)
+    agents = await Agent.find(Agent.user_id == user.id).to_list()
+    trends: list[AgentTrend] = []
+
+    for agent in agents:
+        snaps = await AgentPerformance.find(
+            AgentPerformance.agent_id == agent.id,
+            AgentPerformance.snapshot_date >= cutoff,
+        ).sort(AgentPerformance.snapshot_date).to_list()
+
+        if not snaps:
+            continue
+
+        points = [
+            AgentDayPoint(
+                date=str(s.snapshot_date),
+                daily_pnl=float(s.daily_pnl),
+                daily_pnl_pct=float(s.daily_pnl_pct),
+            )
+            for s in snaps
+        ]
+        trends.append(AgentTrend(
+            agent_id=str(agent.id),
+            agent_name=agent.name or f"Agent {str(agent.id)[:6]}",
+            points=points,
+        ))
+
+    return AgentTrendsResponse(trends=trends)

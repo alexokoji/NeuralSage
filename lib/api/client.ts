@@ -12,6 +12,7 @@ import {
   Candle,
   MarketTicker,
   Notification,
+  AgentTrendsResponse,
   PortfolioOverview,
   Position,
   Strategy,
@@ -159,6 +160,7 @@ export const api = {
 
   // ----- portfolio -----
   portfolioOverview: () => request<PortfolioOverview>('GET', '/api/v1/portfolio/overview'),
+  agentTrends: (days = 7) => request<AgentTrendsResponse>('GET', `/api/v1/portfolio/agent-trends?days=${days}`),
 
   // ----- market -----
   tickers: (symbols?: string[]) => {

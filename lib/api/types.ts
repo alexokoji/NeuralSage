@@ -215,6 +215,22 @@ export interface PortfolioOverview {
   exchanges: ExchangeBalance[];
 }
 
+export interface AgentDayPoint {
+  date: string;
+  daily_pnl: number;
+  daily_pnl_pct: number;
+}
+
+export interface AgentTrend {
+  agent_id: string;
+  agent_name: string;
+  points: AgentDayPoint[];
+}
+
+export interface AgentTrendsResponse {
+  trends: AgentTrend[];
+}
+
 export interface MarketTicker {
   symbol: string;
   price: number;

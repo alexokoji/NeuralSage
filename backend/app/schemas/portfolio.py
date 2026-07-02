@@ -32,6 +32,22 @@ class PortfolioOverview(BaseModel):
     exchanges: list[ExchangeBalance]
 
 
+class AgentDayPoint(BaseModel):
+    date: str
+    daily_pnl: float
+    daily_pnl_pct: float
+
+
+class AgentTrend(BaseModel):
+    agent_id: str
+    agent_name: str
+    points: list[AgentDayPoint]
+
+
+class AgentTrendsResponse(BaseModel):
+    trends: list[AgentTrend]
+
+
 class CandlePoint(BaseModel):
     t: int
     o: float
