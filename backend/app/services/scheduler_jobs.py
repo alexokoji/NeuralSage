@@ -109,12 +109,25 @@ async def reconcile_exchange_positions() -> dict:
                 if not positions:
                     continue
 
-                # Query exchange for currently open positions (best-effort)
+                # Query exchange for currently open positions.
+                # IMPORTANT: if unsupported or failed, skip this agent entirely
+                # rather than treating all DB positions as exchange-closed.
+                exchange_query_ok = False
+                exchange_positions: list = []
                 try:
                     exchange_positions = await client.get_positions() or []
+                    exchange_query_ok = True
+                except AttributeError:
+                    logger.debug(
+                        "agent {} exchange {} does not support get_positions — skipping reconciliation",
+                        agent.id, api_key.exchange,
+                    )
                 except Exception as exc:
                     logger.debug("agent {} exchange position query failed: {}", agent.id, exc)
-                    exchange_positions = []
+
+                if not exchange_query_ok:
+                    skipped += 1
+                    continue
 
                 exchange_symbols = {
                     str(item.get("symbol") or "").upper()
@@ -124,9 +137,18 @@ async def reconcile_exchange_positions() -> dict:
 
                 for pos in positions:
                     if str(pos.symbol).upper() not in exchange_symbols:
-                        # DB says open but exchange says none; close locally.
+                        # Exchange closed this position (SL/TP triggered, liquidation, etc.)
+                        # Compute P&L from last known price so agent stats and learning stay accurate.
+                        exit_price = float(pos.current_price or pos.entry_price)
+                        entry_price = float(pos.entry_price)
+                        qty = float(pos.quantity or 0)
+                        gross = (exit_price - entry_price) * qty
+                        if pos.side == "short":
+                            gross = -gross
+
                         pos.is_open = False
-                        pos.current_price = pos.current_price or pos.entry_price
+                        pos.current_price = exit_price
+                        pos.unrealized_pnl = gross
                         pos.updated_at = datetime.now(timezone.utc)
                         await pos.save()
 
@@ -134,18 +156,53 @@ async def reconcile_exchange_positions() -> dict:
                             try:
                                 trade = await Trade.find_one(Trade.id == pos.trade_id)
                                 if trade and trade.status == "open":
+                                    trade.exit_price = exit_price
+                                    trade.pnl = gross
+                                    trade.pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
                                     trade.status = "filled"
                                     trade.closed_at = datetime.now(timezone.utc)
-                                    trade.notes = f"{trade.notes or ''} reconciled as closed by exchange".strip()
+                                    trade.notes = (
+                                        f"{trade.notes or ''} reconciled as closed by exchange".strip()
+                                    )
                                     await trade.save()
                             except Exception:
                                 pass
+
+                        # Update agent P&L counters so dashboards stay current.
+                        try:
+                            agent_doc = await Agent.get(agent.id)
+                            if agent_doc:
+                                agent_doc.total_pnl = float(agent_doc.total_pnl or 0) + gross
+                                agent_doc.current_day_pnl = float(agent_doc.current_day_pnl or 0) + gross
+                                agent_doc.current_week_pnl = float(agent_doc.current_week_pnl or 0) + gross
+                                if gross > 0:
+                                    agent_doc.winning_trades = (agent_doc.winning_trades or 0) + 1
+                                await agent_doc.save()
+                        except Exception as exc:
+                            logger.debug("agent {} reconcile: failed to update agent stats: {}", agent.id, exc)
+
+                        # Feed outcome into the fleet learning system.
+                        try:
+                            from app.services.learning import LearningService
+                            strategy_type = agent.strategy.type if agent.strategy else None
+                            if strategy_type:
+                                await LearningService.record_trade_outcome(
+                                    agent_id=agent.id,
+                                    strategy_type=strategy_type,
+                                    symbol=pos.symbol,
+                                    timeframe=agent.timeframe,
+                                    pnl=gross,
+                                )
+                        except Exception:
+                            pass
+
                         repaired += 1
                         logger.info(
-                            "agent {} reconciled stale position {} ({}) to closed",
+                            "agent {} reconciled position {} ({}) closed by exchange: pnl={:.4f}",
                             agent.id,
                             pos.symbol,
                             pos.id,
+                            gross,
                         )
             finally:
                 await client.close()

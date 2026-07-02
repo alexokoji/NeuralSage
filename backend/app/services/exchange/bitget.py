@@ -297,5 +297,33 @@ class BitgetClient(ExchangeClient):
             )
         return out
 
+    async def get_positions(self) -> list[dict[str, Any]]:
+        """Return currently open USDT-FUTURES positions from Bitget."""
+        try:
+            data = await self._signed(
+                "GET",
+                "/api/v2/mix/position/all-position",
+                params={"productType": "USDT-FUTURES", "marginCoin": "USDT"},
+            )
+            rows = data if isinstance(data, list) else (data.get("data") or [])
+        except Exception:
+            raise
+        out = []
+        for item in rows or []:
+            total = float(item.get("total") or item.get("openSizeLeft") or 0)
+            if total <= 0:
+                continue
+            # Bitget symbol format is e.g. "BTCUSDT"; normalise to uppercase
+            sym = str(item.get("symbol") or "").upper().replace("_UMCBL", "").replace("_DMCBL", "")
+            out.append({
+                "symbol": sym,
+                "side": str(item.get("holdSide") or "").lower(),
+                "qty": total,
+                "entry_price": float(item.get("averageOpenPrice") or item.get("openPriceAvg") or 0),
+                "mark_price": float(item.get("markPrice") or 0),
+                "unrealized_pnl": float(item.get("unrealizedPL") or 0),
+            })
+        return out
+
     async def close(self) -> None:
         await self._http.aclose()
