@@ -325,5 +325,58 @@ class BitgetClient(ExchangeClient):
             })
         return out
 
+    async def get_closed_orders(
+        self,
+        symbol: str | None = None,
+        limit: int = 100,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recently filled/cancelled orders from Bitget USDT-FUTURES.
+
+        Each returned dict contains:
+          symbol, order_id, side, avg_fill_price, filled_qty, pnl, status, closed_at_ms
+        """
+        params: dict[str, Any] = {
+            "productType": "USDT-FUTURES",
+            "limit": str(limit),
+        }
+        if symbol:
+            params["symbol"] = symbol
+        if start_ms:
+            params["startTime"] = str(start_ms)
+        if end_ms:
+            params["endTime"] = str(end_ms)
+
+        try:
+            data = await self._signed("GET", "/api/v2/mix/order/orders-history", params=params)
+        except Exception:
+            raise
+
+        rows = (
+            data.get("entrustedList")
+            or data.get("orderList")
+            or (data if isinstance(data, list) else [])
+        )
+        out = []
+        for o in rows or []:
+            status_raw = str(o.get("state") or o.get("status") or "").lower()
+            # Only return filled orders (fully or partially)
+            if status_raw not in ("filled", "full_fill", "partially_fill", "partially_filled"):
+                continue
+            sym = str(o.get("symbol") or "").upper().replace("_UMCBL", "").replace("_DMCBL", "")
+            out.append({
+                "symbol": sym,
+                "order_id": str(o.get("orderId") or ""),
+                "client_order_id": str(o.get("clientOid") or ""),
+                "side": str(o.get("side") or "").lower(),
+                "avg_fill_price": float(o.get("priceAvg") or o.get("price") or 0),
+                "filled_qty": float(o.get("baseVolume") or o.get("filledQty") or 0),
+                "pnl": float(o.get("profit") or o.get("realizedPnl") or 0),
+                "status": status_raw,
+                "closed_at_ms": int(o.get("uTime") or o.get("cTime") or 0),
+            })
+        return out
+
     async def close(self) -> None:
         await self._http.aclose()

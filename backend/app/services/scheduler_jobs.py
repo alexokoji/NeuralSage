@@ -135,16 +135,74 @@ async def reconcile_exchange_positions() -> dict:
                     if item and str(item.get("symbol") or "").strip()
                 }
 
+                # Pre-fetch recent closed orders once per agent to find actual fill prices.
+                # Look back 24 h so we catch any SL/TP that fired since the last reconcile.
+                closed_orders_by_symbol: dict[str, list[dict]] = {}
+                try:
+                    import time as _time
+                    lookback_ms = int((_time.time() - 86_400) * 1000)
+                    raw_closed = await client.get_closed_orders(limit=100, start_ms=lookback_ms)
+                    for o in raw_closed:
+                        sym = o["symbol"]
+                        closed_orders_by_symbol.setdefault(sym, []).append(o)
+                except AttributeError:
+                    pass  # exchange client doesn't support get_closed_orders — fall back to candle price
+                except Exception as exc:
+                    logger.debug("agent {} closed-order fetch failed: {}", agent.id, exc)
+
                 for pos in positions:
                     if str(pos.symbol).upper() not in exchange_symbols:
                         # Exchange closed this position (SL/TP triggered, liquidation, etc.)
-                        # Compute P&L from last known price so agent stats and learning stay accurate.
-                        exit_price = float(pos.current_price or pos.entry_price)
                         entry_price = float(pos.entry_price)
                         qty = float(pos.quantity or 0)
-                        gross = (exit_price - entry_price) * qty
-                        if pos.side == "short":
-                            gross = -gross
+
+                        # Try to match the actual exit fill from closed orders.
+                        # Match on symbol + roughly matching qty, pick the most recent.
+                        exchange_order_id = str(getattr(pos, "exchange_order_id", "") or "")
+                        actual_fill: dict | None = None
+                        sym_orders = closed_orders_by_symbol.get(str(pos.symbol).upper(), [])
+                        # 1. Try exact client_order_id match via linked trade
+                        trade_for_match = None
+                        if pos.trade_id:
+                            try:
+                                trade_for_match = await Trade.find_one(Trade.id == pos.trade_id)
+                            except Exception:
+                                pass
+                        linked_oid = str(
+                            (trade_for_match.exchange_order_id if trade_for_match else None) or exchange_order_id
+                        )
+                        if linked_oid:
+                            actual_fill = next(
+                                (o for o in sym_orders if o["order_id"] == linked_oid),
+                                None,
+                            )
+                        # 2. Fall back: pick the most recent filled order on this symbol
+                        #    whose qty is within 5 % of the position qty.
+                        if actual_fill is None and sym_orders:
+                            qty_matches = [
+                                o for o in sym_orders
+                                if abs(o["filled_qty"] - qty) / max(qty, 1e-9) < 0.05
+                            ]
+                            if qty_matches:
+                                actual_fill = max(qty_matches, key=lambda o: o["closed_at_ms"])
+
+                        if actual_fill and actual_fill["avg_fill_price"] > 0:
+                            exit_price = actual_fill["avg_fill_price"]
+                            # Use exchange-reported realised PnL when available (includes fees).
+                            if actual_fill["pnl"] != 0:
+                                gross = actual_fill["pnl"]
+                            else:
+                                gross = (exit_price - entry_price) * qty
+                                if pos.side == "short":
+                                    gross = -gross
+                            price_source = "exchange_fill"
+                        else:
+                            # No fill data found — fall back to last known candle price.
+                            exit_price = float(pos.current_price or entry_price)
+                            gross = (exit_price - entry_price) * qty
+                            if pos.side == "short":
+                                gross = -gross
+                            price_source = "candle_estimate"
 
                         pos.is_open = False
                         pos.current_price = exit_price
@@ -162,8 +220,9 @@ async def reconcile_exchange_positions() -> dict:
                                     trade.status = "filled"
                                     trade.closed_at = datetime.now(timezone.utc)
                                     trade.notes = (
-                                        f"{trade.notes or ''} reconciled as closed by exchange".strip()
-                                    )
+                                        f"{trade.notes or ''} reconciled as closed by exchange"
+                                        f" (price_source={price_source})"
+                                    ).strip()
                                     await trade.save()
                             except Exception:
                                 pass
@@ -198,11 +257,14 @@ async def reconcile_exchange_positions() -> dict:
 
                         repaired += 1
                         logger.info(
-                            "agent {} reconciled position {} ({}) closed by exchange: pnl={:.4f}",
+                            "agent {} reconciled position {} ({}) closed by exchange:"
+                            " pnl={:.4f} exit_price={} price_source={}",
                             agent.id,
                             pos.symbol,
                             pos.id,
                             gross,
+                            exit_price,
+                            price_source,
                         )
             finally:
                 await client.close()
