@@ -100,9 +100,13 @@ class BitgetClient(ExchangeClient):
         if method.upper() == "GET":
             qs = ""
             if params:
+                # Sort params so the query string in the signature matches
+                # exactly what httpx sends — param order matters for Bitget.
                 qs = "?" + "&".join(f"{k}={v}" for k, v in sorted(params.items()))
             sig = self._sign(ts, method, path + qs, "")
-            resp = await self._http.get(path, params=params, headers=self._headers(ts, sig))
+            # Pass the pre-sorted query string directly instead of a dict so
+            # httpx cannot reorder the params and break the signature.
+            resp = await self._http.get(path + qs, headers=self._headers(ts, sig))
         else:
             payload = json.dumps(body or {}, separators=(",", ":"))
             sig = self._sign(ts, method, path, payload)

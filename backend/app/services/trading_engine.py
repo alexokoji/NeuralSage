@@ -1091,16 +1091,30 @@ class TradingEngine:
                     avail = max((b.available for b in balances), default=0.0)
                     max_notional = avail * leverage * 0.90  # 10% buffer for fees/margin
                     notional = quantity * entry_price
-                    if notional > max_notional and max_notional > 0:
+                    logger.info(
+                        "agent {} {} balance check: avail=${:.4f} leverage={}x"
+                        " max_notional=${:.2f} order_notional=${:.2f}",
+                        agent.id, symbol, avail, leverage, max_notional, notional,
+                    )
+                    if max_notional <= 0:
+                        logger.warning(
+                            "agent {} {} skipping order: no free margin (avail=${:.4f})",
+                            agent.id, symbol, avail,
+                        )
+                        return
+                    if notional > max_notional:
                         capped_qty = max_notional / entry_price
                         logger.info(
-                            "agent {} {} capping qty {:.4f}→{:.4f} (notional ${:.2f}>${:.2f} avail×{}x)",
-                            agent.id, symbol, quantity, capped_qty, notional, max_notional, leverage,
+                            "agent {} {} capping qty {:.4f}→{:.4f} (${:.2f}→${:.2f})",
+                            agent.id, symbol, quantity, capped_qty, notional, max_notional,
                         )
                         order.quantity = capped_qty
                         quantity = capped_qty
-                except Exception:
-                    pass
+                except ExchangeError as exc:
+                    logger.warning("agent {} {} balance check failed: {} — skipping order", agent.id, symbol, exc)
+                    return
+                except Exception as exc:
+                    logger.warning("agent {} {} balance check error: {}", agent.id, symbol, exc)
 
                 logger.info("agent {} {} sending live order: qty={} side={} sl={} tp={}", agent.id, symbol, quantity, side, sl_price, tp_price)
                 placed = await client.place_order(order)
