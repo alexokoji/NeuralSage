@@ -130,8 +130,28 @@ class TradingEngine:
         # --- Fetch learning context once per tick so AI calls can use it ---
         learning_context: dict[str, Any] = {}
         try:
+            from app.models.position import Position as PositionModel
             from app.models.trade import Trade as TradeModel
-            from app.services.learning import LearningService
+
+            # All currently open positions for this agent across ALL pairs.
+            open_positions = await PositionModel.find(
+                PositionModel.agent_id == agent.id,
+                PositionModel.is_open == True,  # noqa: E712
+            ).to_list()
+            open_positions_summary = [
+                {
+                    "symbol": p.symbol,
+                    "side": p.side,
+                    "entry_price": float(p.entry_price),
+                    "current_price": float(p.current_price or p.entry_price),
+                    "unrealized_pnl": float(p.unrealized_pnl or 0),
+                    "stop_loss": float(p.stop_loss or 0),
+                    "take_profit": float(p.take_profit or 0),
+                }
+                for p in open_positions
+            ]
+            open_symbols = {p.symbol for p in open_positions}
+
             recent = await TradeModel.find(
                 TradeModel.agent_id == agent.id,
             ).sort(-TradeModel.created_at).limit(10).to_list()
@@ -154,6 +174,9 @@ class TradingEngine:
                 for t in recent
             ]
             learning_context = {
+                "open_positions": open_positions_summary,
+                "open_symbols": sorted(open_symbols),
+                "open_position_count": len(open_positions),
                 "recent_trades": recent_summary,
                 "loss_streak": loss_streak,
                 "total_pnl": float(agent.total_pnl or 0),
@@ -164,6 +187,7 @@ class TradingEngine:
                     int(agent.winning_trades or 0) / max(int(agent.total_trades or 1), 1) * 100, 1
                 ),
                 "recovery_mode": bool(agent.recovery_mode),
+                "max_concurrent_trades": int(agent.max_concurrent_trades or 1),
             }
         except Exception as exc:
             logger.debug("agent {} learning context fetch failed: {}", agent.id, exc)

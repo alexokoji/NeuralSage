@@ -312,13 +312,32 @@ async def groq_analyse(
     indicator_text = _indicator_summary(candles)
     agent_ctx = agent_context or {}
 
+    open_positions = agent_ctx.get("open_positions", [])
+    open_symbols = agent_ctx.get("open_symbols", [])
+    max_concurrent = agent_ctx.get("max_concurrent_trades", 1)
+    already_on_this_pair = symbol in open_symbols
+
+    open_pos_text = ""
+    if open_positions:
+        lines = [
+            f"  {p['symbol']} {p['side']} @ {p['entry_price']} → unrealized {p['unrealized_pnl']:+.4f}"
+            for p in open_positions
+        ]
+        open_pos_text = "CURRENTLY OPEN POSITIONS:\n" + "\n".join(lines) + "\n"
+
+    at_capacity = len(open_positions) >= max_concurrent
+
     prompt = f"""Analyse this market and decide whether to trade.
 
 Symbol: {symbol} | Timeframe: {timeframe}
 {candle_text}
 Indicators: {indicator_text}
 Strategy screener says: {signal.action} (confidence: {signal.confidence:.2f}) — {signal.reason}
-Agent: {json.dumps(agent_ctx)}
+
+Agent performance: win_rate={agent_ctx.get('win_rate_pct', 0):.1f}% | day_pnl={agent_ctx.get('current_day_pnl', 0):+.4f} | loss_streak={agent_ctx.get('loss_streak', 0)}
+{open_pos_text}
+{"⚠ ALREADY IN POSITION ON THIS PAIR — only output 'exit' or 'hold', not a new entry." if already_on_this_pair else ""}
+{"⚠ AT MAX CONCURRENT TRADES — output 'hold' unless this is an exit signal." if at_capacity and not already_on_this_pair else ""}
 
 Look at momentum, EMA positions, price action. Is there a clear entry or exit?
 For scalping ({timeframe}): look for quick mean-reversion or momentum entries with tight stops.
@@ -372,13 +391,27 @@ async def gpt_decide(
     ctx = learning_context or {}
 
     recent_trades = ctx.get("recent_trades", [])
+    open_positions = ctx.get("open_positions", [])
+    open_symbols = ctx.get("open_symbols", [])
+    already_on_this_pair = symbol in open_symbols
+
+    open_pos_text = ""
+    if open_positions:
+        lines = [
+            f"  {p['symbol']} {p['side']} @ {p['entry_price']} unrealized={p['unrealized_pnl']:+.4f}"
+            for p in open_positions
+        ]
+        open_pos_text = "Open positions: " + " | ".join(
+            f"{p['symbol']} {p['side']}" for p in open_positions
+        )
+
     recent_text = ""
     if recent_trades:
         lines = []
         for t in recent_trades[:5]:
             status = t.get("status", "")
             pnl = t.get("pnl", 0)
-            pnl_str = f"{pnl:+.4f}" if status == "filled" else "open"
+            pnl_str = f"{pnl:+.4f}" if status == "filled" else "STILL OPEN"
             lines.append(f"  {t.get('symbol')} {t.get('side')} → {pnl_str}")
         recent_text = "Recent trades:\n" + "\n".join(lines)
 
@@ -402,7 +435,9 @@ Last 5 candles:
 
 Agent: {agent_name}
 {performance_text}
+{open_pos_text}
 {recent_text}
+{"⚠ ALREADY IN POSITION ON THIS PAIR — REJECT any new entry." if already_on_this_pair and groq_signal.action in ("enter_long", "enter_short") else ""}
 
 Do you APPROVE or REJECT this trade? Consider:
 1. Does the reasoning make sense given the candle data?
@@ -410,6 +445,7 @@ Do you APPROVE or REJECT this trade? Consider:
 3. Is this a good entry point or are we chasing?
 4. Given the recent trade history and loss streak, is now a good time to enter?
    If loss_streak >= 3, require stronger conviction before approving.
+5. If there is already an open position on this pair, REJECT a new entry.
 
 Output JSON: {{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1 sentence>"}}
 """
