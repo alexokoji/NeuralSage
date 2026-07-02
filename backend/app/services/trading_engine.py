@@ -919,77 +919,6 @@ class TradingEngine:
                 take_profit_price=tp_price,
             )
             logger.debug("agent {} {} _open_trade completed", agent.id, symbol)
-        positions = await Position.find(
-            Position.agent_id == agent.id,
-            Position.is_open == True,  # noqa: E712
-        ).to_list()
-
-        if not positions:
-            return 0
-
-        # Fetch fresh prices for accurate P&L
-        for pos in positions:
-            try:
-                raw = await client.get_candles(pos.symbol, agent.timeframe or "5m", limit=2)
-                if raw:
-                    from app.services.strategy.indicators import candles_to_df
-                    df = candles_to_df(raw)
-                    pos.current_price = float(df["close"].iloc[-1])
-            except Exception:
-                pass
-
-        reason = "position management"
-        closed = 0
-        tightened = 0
-        for pos in positions:
-            entry = float(pos.entry_price)
-            current = float(pos.current_price or entry)
-            sl = float(pos.stop_loss or entry)
-
-            # Calculate unrealized P&L %
-            if pos.side == "long":
-                pnl_pct = (current - entry) / entry * 100
-                distance_to_sl = (entry - sl) / entry * 100 if sl < entry else 0
-                at_risk_pct = (entry - current) / entry * 100 if current < entry else 0
-            else:
-                pnl_pct = (entry - current) / entry * 100
-                distance_to_sl = (sl - entry) / entry * 100 if sl > entry else 0
-                at_risk_pct = (current - entry) / entry * 100 if current > entry else 0
-
-            try:
-                if pnl_pct > 0.05:
-                    # In profit → close to lock in gains
-                    await self._close_position(agent, api_key, client, pos, current, f"{reason} (locking profit +{pnl_pct:.2f}%)")
-                    closed += 1
-                elif abs(pnl_pct) <= 0.1:
-                    # Breakeven → close to free capital
-                    await self._close_position(agent, api_key, client, pos, current, f"{reason} (breakeven)")
-                    closed += 1
-                elif distance_to_sl > 0 and at_risk_pct > distance_to_sl * 0.6:
-                    # Losing and close to stop loss → close before it gets worse
-                    await self._close_position(agent, api_key, client, pos, current, f"{reason} (near SL, cutting loss)")
-                    closed += 1
-                else:
-                    # Position still has room to run → tighten stop to breakeven
-                    if pos.side == "long":
-                        pos.stop_loss = max(entry, sl)
-                    else:
-                        pos.stop_loss = min(entry, sl) if sl > 0 else entry
-                    await pos.save()
-                    tightened += 1
-                    logger.info(
-                        "agent {} {}: tightened SL to breakeven (not closing — PnL {:.2f}%)",
-                        agent.id, pos.symbol, pnl_pct,
-                    )
-            except Exception as exc:
-                logger.warning("failed to handle position {} for agent {}: {}", pos.id, agent.id, exc)
-
-        if closed or tightened:
-            logger.info(
-                "agent {}: {} position(s) closed, {} tightened to breakeven — {}",
-                agent.id, closed, tightened, reason,
-            )
-        return closed
 
     async def _persist_open_trade(
         self,
@@ -1146,6 +1075,34 @@ class TradingEngine:
                     )
                     logger.warning("agent {} {} live order rejected: missing SL/TP", agent.id, symbol)
                     return
+
+                # Set leverage before placing so Bitget accepts the margin.
+                # Use 10x for small accounts (<$50) or the exchange default otherwise.
+                # set_leverage is a no-op if the exchange doesn't support it.
+                try:
+                    leverage = 10 if float(agent.assigned_capital or 0) <= 50 else 5
+                    if hasattr(client, "set_leverage"):
+                        await client.set_leverage(symbol, leverage, side=side)
+                except Exception:
+                    pass
+
+                # Sanity-check: notional must not exceed balance × leverage.
+                # This prevents "amount exceeds balance" rejections.
+                try:
+                    balances = await client.get_balances()
+                    avail = max((b.available for b in balances), default=0.0)
+                    max_notional = avail * leverage
+                    notional = quantity * entry_price
+                    if notional > max_notional and max_notional > 0:
+                        capped_qty = max_notional / entry_price
+                        logger.info(
+                            "agent {} {} capping qty {:.4f}→{:.4f} (notional ${:.2f}>${:.2f} avail×{}x)",
+                            agent.id, symbol, quantity, capped_qty, notional, max_notional, leverage,
+                        )
+                        order.quantity = capped_qty
+                        quantity = capped_qty
+                except Exception:
+                    pass
 
                 logger.info("agent {} {} sending live order: qty={} side={} sl={} tp={}", agent.id, symbol, quantity, side, sl_price, tp_price)
                 placed = await client.place_order(order)

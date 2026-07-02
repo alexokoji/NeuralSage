@@ -297,6 +297,24 @@ class BitgetClient(ExchangeClient):
             )
         return out
 
+    async def set_leverage(self, symbol: str, leverage: int, side: str = "long") -> None:
+        """Set futures leverage for a symbol before placing an order."""
+        try:
+            await self._signed(
+                "POST",
+                "/api/v2/mix/account/set-leverage",
+                body={
+                    "productType": "USDT-FUTURES",
+                    "marginCoin": "USDT",
+                    "symbol": symbol,
+                    "leverage": str(leverage),
+                    "holdSide": side,
+                },
+            )
+        except Exception as exc:
+            # Non-fatal — if leverage is already set this may return an error
+            logger.debug("bitget set_leverage {}/{} ignored: {}", symbol, leverage, exc)
+
     async def get_positions(self) -> list[dict[str, Any]]:
         """Return currently open USDT-FUTURES positions from Bitget."""
         try:
