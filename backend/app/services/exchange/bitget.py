@@ -327,6 +327,23 @@ class BitgetClient(ExchangeClient):
         except Exception as exc:
             logger.info("bitget set_leverage {}/{}x: {}", symbol, leverage, exc)
 
+    async def get_account_leverage(self, symbol: str) -> int:
+        """Return the current leverage Bitget has set for this symbol.
+
+        Falls back to 1 on any error so the caller can use a safe default.
+        """
+        try:
+            data = await self._signed(
+                "GET",
+                "/api/v2/mix/account/account",
+                params={"productType": "USDT-FUTURES", "marginCoin": "USDT", "symbol": symbol},
+            )
+            lev = int(float(data.get("leverage") or 1))
+            return max(lev, 1)
+        except Exception as exc:
+            logger.debug("bitget get_account_leverage {} failed: {}", symbol, exc)
+            return 1
+
     async def get_positions(self) -> list[dict[str, Any]]:
         """Return currently open USDT-FUTURES positions from Bitget."""
         try:

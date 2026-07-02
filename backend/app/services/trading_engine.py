@@ -1137,27 +1137,32 @@ class TradingEngine:
                     logger.warning("agent {} {} live order rejected: missing SL/TP", agent.id, symbol)
                     return
 
-                # Set leverage before placing so Bitget accepts the margin.
-                # Use 10x for small accounts (<$50) or the exchange default otherwise.
-                # set_leverage is a no-op if the exchange doesn't support it.
+                # Set target leverage then verify what Bitget actually applied.
+                target_leverage = 10 if float(agent.assigned_capital or 0) <= 50 else 5
                 try:
-                    leverage = 10 if float(agent.assigned_capital or 0) <= 50 else 5
                     if hasattr(client, "set_leverage"):
-                        await client.set_leverage(symbol, leverage, side=side)
+                        await client.set_leverage(symbol, target_leverage, side=side)
                 except Exception:
                     pass
 
-                # Sanity-check: notional must not exceed balance × leverage.
-                # This prevents "amount exceeds balance" rejections.
+                # Read the leverage Bitget actually has set (may differ from target).
+                actual_leverage = 1
+                if hasattr(client, "get_account_leverage"):
+                    actual_leverage = await client.get_account_leverage(symbol)
+                if actual_leverage < 1:
+                    actual_leverage = 1
+
+                # Cap notional to what the available balance can support at actual leverage.
                 try:
                     balances = await client.get_balances()
                     avail = max((b.available for b in balances), default=0.0)
-                    max_notional = avail * leverage * 0.90  # 10% buffer for fees/margin
+                    max_notional = avail * actual_leverage * 0.85  # 15% buffer for fees/margin
                     notional = quantity * entry_price
                     logger.info(
-                        "agent {} {} balance check: avail=${:.4f} leverage={}x"
-                        " max_notional=${:.2f} order_notional=${:.2f}",
-                        agent.id, symbol, avail, leverage, max_notional, notional,
+                        "agent {} {} balance check: avail=${:.4f} target_lev={}x"
+                        " actual_lev={}x max_notional=${:.2f} order_notional=${:.2f}",
+                        agent.id, symbol, avail, target_leverage, actual_leverage,
+                        max_notional, notional,
                     )
                     if max_notional <= 0:
                         logger.warning(
@@ -1168,8 +1173,9 @@ class TradingEngine:
                     if notional > max_notional:
                         capped_qty = max_notional / entry_price
                         logger.info(
-                            "agent {} {} capping qty {:.4f}→{:.4f} (${:.2f}→${:.2f})",
-                            agent.id, symbol, quantity, capped_qty, notional, max_notional,
+                            "agent {} {} capping qty {:.4f}→{:.4f} (${:.2f}→${:.2f} at {}x)",
+                            agent.id, symbol, quantity, capped_qty, notional,
+                            max_notional, actual_leverage,
                         )
                         order.quantity = capped_qty
                         quantity = capped_qty
