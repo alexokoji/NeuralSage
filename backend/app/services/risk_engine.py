@@ -43,7 +43,15 @@ class RiskEngine:
     @staticmethod
     def cap_risk_per_trade(agent: Agent) -> float:
         agent_pct = float(agent.max_risk_per_trade or 0)
-        return min(agent_pct, settings.MAX_RISK_PER_TRADE_PCT)
+        cap = settings.MAX_RISK_PER_TRADE_PCT
+        # Small accounts need a higher risk-per-trade so the position size
+        # calculation can reach the exchange's minimum order quantity.
+        # Without this, the global 2% cap produces a qty below the minimum
+        # and every trade is rejected.
+        capital = float(agent.assigned_capital or 0)
+        if 0 < capital <= 50.0:
+            cap = max(cap, 5.0)
+        return min(agent_pct, cap)
 
     @staticmethod
     def position_size(

@@ -501,6 +501,9 @@ async def _refresh_agent_strategy_params() -> None:
                 merged["min_confidence"] = new_defaults.get("min_confidence", 0.45)
             if int(merged.get("ema_period", 99)) > 6:
                 merged["ema_period"] = new_defaults.get("ema_period", 5)
+            # Raise TP if it's below 0.25% — the old 0.15% barely covered Bitget fees
+            if float(merged.get("profit_target_pct", 0)) < 0.25:
+                merged["profit_target_pct"] = new_defaults.get("profit_target_pct", 0.30)
 
         if merged != current:
             agent.strategy_params = merged

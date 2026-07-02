@@ -18,7 +18,7 @@ class MicroScalpingStrategy(Strategy):
     default_params: dict[str, Any] = {
         "ema_period": 5,
         "deviation_pct": 0.06,
-        "profit_target_pct": 0.15,
+        "profit_target_pct": 0.30,   # 0.30% covers Bitget's ~0.12% round-trip fee with margin
         "stop_loss_pct": 0.10,
         "max_trades_per_hour": 15,
         "position_size_pct": 1.5,
