@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -95,6 +96,85 @@ async def place_manual_order(
     )
     await trade.insert()
     return trade
+
+
+@router.post("/cleanup-positions", status_code=status.HTTP_200_OK)
+async def cleanup_stale_positions(user: User = Depends(get_current_user)):
+    """Close open DB positions that no longer exist on the exchange (or are old paper trades).
+
+    - Live positions: checks Bitget; closes any DB position not found there.
+    - Paper positions: closes any position open more than 24 hours (SL/TP should have fired).
+    Safe to call multiple times.
+    """
+    from datetime import timedelta
+    from app.models.agent import Agent
+    from app.services.exchange import build_client
+    from app.services.exchange.base import ExchangeError
+
+    open_positions = await Position.find(
+        Position.user_id == user.id,
+        Position.is_open == True,  # noqa: E712
+    ).to_list()
+
+    closed = 0
+    now = datetime.now(timezone.utc)
+
+    # Group positions by agent to share one exchange client per agent
+    agent_cache: dict[str, Any] = {}
+    exchange_symbols_cache: dict[str, set] = {}
+
+    for pos in open_positions:
+        agent_id_str = str(pos.agent_id) if pos.agent_id else None
+
+        # Determine if paper or live
+        is_paper = True
+        if agent_id_str and agent_id_str not in agent_cache:
+            agent = await Agent.get(pos.agent_id)
+            agent_cache[agent_id_str] = agent
+        agent = agent_cache.get(agent_id_str) if agent_id_str else None
+        if agent:
+            is_paper = bool(agent.is_paper_trade)
+
+        if is_paper:
+            # Paper position open > 24h means SL/TP never fired — stale
+            age = (now - pos.opened_at).total_seconds() if pos.opened_at else 999999
+            if age > 86400:
+                pos.is_open = False
+                pos.updated_at = now
+                await pos.save()
+                closed += 1
+            continue
+
+        # Live position: check if it still exists on the exchange
+        api_key_id_str = str(pos.agent_id)  # use agent to find api key
+        if agent_id_str not in exchange_symbols_cache:
+            try:
+                if agent and agent.api_key_id:
+                    api_key = await ApiKey.get(agent.api_key_id)
+                    client = build_client(api_key)
+                    try:
+                        exchange_positions = await client.get_positions()
+                        exchange_symbols_cache[agent_id_str] = {
+                            str(p.get("symbol", "")).upper() for p in (exchange_positions or [])
+                        }
+                    finally:
+                        await client.close()
+                else:
+                    exchange_symbols_cache[agent_id_str] = set()
+            except Exception:
+                exchange_symbols_cache[agent_id_str] = None  # type: ignore
+
+        live_symbols = exchange_symbols_cache.get(agent_id_str)
+        if live_symbols is None:
+            continue  # couldn't fetch — skip rather than falsely close
+
+        if str(pos.symbol).upper() not in live_symbols:
+            pos.is_open = False
+            pos.updated_at = now
+            await pos.save()
+            closed += 1
+
+    return {"open_before": len(open_positions), "closed": closed, "remaining": len(open_positions) - closed}
 
 
 @router.post("/cleanup-stale", status_code=status.HTTP_200_OK)
