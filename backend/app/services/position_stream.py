@@ -134,18 +134,34 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
     symbol = fill["symbol"]
     avg_price = float(fill["avg_fill_price"] or 0)
     exchange_pnl = float(fill["pnl"] or 0)
+    fill_side = str(fill.get("side") or "").lower()
+    is_reduce_only = bool(fill.get("reduce_only"))
 
     if avg_price <= 0:
         logger.debug("position_stream: ignoring fill with no price: {}", fill)
         return
 
-    # Only care about closing fills (reduce_only) or any fill that matches an open position
+    # Opening orders (buy to enter long, sell to enter short) also fire fill
+    # events — we must NOT close positions on those.  Only act on fills that
+    # are closing the position:
+    #   • reduce_only flag is set, OR
+    #   • fill side is opposite to the position side
+    #     (sell fill → closes a long; buy fill → closes a short)
+    # If neither condition is satisfied this is an entry fill — ignore it.
+    def _is_closing_fill(pos_side: str) -> bool:
+        if is_reduce_only:
+            return True
+        if pos_side == "long" and fill_side == "sell":
+            return True
+        if pos_side == "short" and fill_side == "buy":
+            return True
+        return False
+
     try:
         api_key = await ApiKey.get(api_key_id)
         if not api_key:
             return
 
-        # Find open positions on this symbol belonging to any agent using this key
         agents = await Agent.find(Agent.api_key_id == api_key.id).to_list()
         for agent in agents:
             positions = await Position.find(
@@ -155,6 +171,14 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
             ).to_list()
 
             for pos in positions:
+                # Skip fills that are opening new positions, not closing this one.
+                if not _is_closing_fill(pos.side):
+                    logger.debug(
+                        "position_stream: ignoring entry fill for {} {} (side={})",
+                        symbol, pos.side, fill_side,
+                    )
+                    continue
+
                 entry_price = float(pos.entry_price)
                 qty = float(pos.quantity or 0)
 

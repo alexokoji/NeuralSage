@@ -686,6 +686,7 @@ class TradingEngine:
         agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
+        await agent.save()
 
         # Feed the learning system.
         try:
