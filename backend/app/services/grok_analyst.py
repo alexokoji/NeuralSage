@@ -356,6 +356,7 @@ async def gpt_decide(
     symbol: str,
     timeframe: str,
     agent_name: str,
+    learning_context: dict[str, Any] | None = None,
 ) -> Signal:
     """GPT makes the final approve/reject decision on Groq's best pick.
 
@@ -368,6 +369,29 @@ async def gpt_decide(
         return groq_signal
 
     last_5 = candles.tail(5)[["open", "high", "low", "close"]].round(4).to_string()
+    ctx = learning_context or {}
+
+    recent_trades = ctx.get("recent_trades", [])
+    recent_text = ""
+    if recent_trades:
+        lines = []
+        for t in recent_trades[:5]:
+            status = t.get("status", "")
+            pnl = t.get("pnl", 0)
+            pnl_str = f"{pnl:+.4f}" if status == "filled" else "open"
+            lines.append(f"  {t.get('symbol')} {t.get('side')} → {pnl_str}")
+        recent_text = "Recent trades:\n" + "\n".join(lines)
+
+    loss_streak = ctx.get("loss_streak", 0)
+    win_rate = ctx.get("win_rate_pct", 0)
+    day_pnl = ctx.get("current_day_pnl", 0)
+    recovery = ctx.get("recovery_mode", False)
+
+    performance_text = (
+        f"Win rate: {win_rate:.1f}% | Day P&L: {day_pnl:+.4f} USDT"
+        f" | Loss streak: {loss_streak}"
+        + (" | ⚠ RECOVERY MODE" if recovery else "")
+    )
 
     prompt = f"""Groq AI analysed {symbol} on {timeframe} and recommends: {groq_signal.action} (confidence: {groq_signal.confidence:.2f})
 Groq's reasoning: {groq_signal.reason}
@@ -377,11 +401,15 @@ Last 5 candles:
 {last_5}
 
 Agent: {agent_name}
+{performance_text}
+{recent_text}
 
 Do you APPROVE or REJECT this trade? Consider:
 1. Does the reasoning make sense given the candle data?
 2. Is the risk/reward acceptable?
 3. Is this a good entry point or are we chasing?
+4. Given the recent trade history and loss streak, is now a good time to enter?
+   If loss_streak >= 3, require stronger conviction before approving.
 
 Output JSON: {{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1 sentence>"}}
 """

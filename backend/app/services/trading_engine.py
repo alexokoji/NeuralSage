@@ -127,6 +127,47 @@ class TradingEngine:
                     data={"agent_id": str(agent.id), "trigger": "daily_profit_protect"},
                 )
 
+        # --- Fetch learning context once per tick so AI calls can use it ---
+        learning_context: dict[str, Any] = {}
+        try:
+            from app.models.trade import Trade as TradeModel
+            from app.services.learning import LearningService
+            recent = await TradeModel.find(
+                TradeModel.agent_id == agent.id,
+            ).sort(-TradeModel.created_at).limit(10).to_list()
+            loss_streak = 0
+            for t in recent:
+                if t.status == "filled" and float(t.pnl or 0) < 0:
+                    loss_streak += 1
+                elif t.status == "filled":
+                    break
+            recent_summary = [
+                {
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "status": t.status,
+                    "pnl": float(t.pnl or 0),
+                    "pnl_pct": float(t.pnl_pct or 0),
+                    "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+                    "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                }
+                for t in recent
+            ]
+            learning_context = {
+                "recent_trades": recent_summary,
+                "loss_streak": loss_streak,
+                "total_pnl": float(agent.total_pnl or 0),
+                "current_day_pnl": float(agent.current_day_pnl or 0),
+                "winning_trades": int(agent.winning_trades or 0),
+                "total_trades": int(agent.total_trades or 0),
+                "win_rate_pct": round(
+                    int(agent.winning_trades or 0) / max(int(agent.total_trades or 1), 1) * 100, 1
+                ),
+                "recovery_mode": bool(agent.recovery_mode),
+            }
+        except Exception as exc:
+            logger.debug("agent {} learning context fetch failed: {}", agent.id, exc)
+
         # --- Two-phase scan: screener filters, AI analyses top candidates ---
         # Phase 1: Run screener on ALL symbols (free, no API calls)
         candidates: list[tuple[str, Any, Any, Any]] = []  # (symbol, df, screener_signal, open_pos)
@@ -213,13 +254,10 @@ class TradingEngine:
                         strategy_params=agent.strategy_params or {},
                         agent_context={
                             "agent_name": agent.name,
-                            "total_trades": agent.total_trades,
-                            "winning_trades": agent.winning_trades,
-                            "total_pnl": float(agent.total_pnl or 0),
-                            "current_day_pnl": float(agent.current_day_pnl or 0),
                             "in_position": open_position is not None,
                             "screener_said": screener_signal.action,
                             "screener_confidence": screener_signal.confidence,
+                            **learning_context,
                         },
                     )
                     ai_used = True
@@ -238,6 +276,7 @@ class TradingEngine:
                         groq_signal, df,
                         symbol=symbol, timeframe=agent.timeframe,
                         agent_name=agent.name,
+                        learning_context=learning_context,
                     )
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
