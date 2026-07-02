@@ -41,9 +41,22 @@ async def lifespan(app: FastAPI):
     else:
         _sched_shutdown = lambda: None  # noqa: E731
 
+    # Start real-time WebSocket streams for live exchange agents.
+    try:
+        from app.services.position_stream import start_all_active as _stream_start
+        from app.services.position_stream import stop_all as _stream_stop
+        await _stream_start()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("position stream startup failed (non-fatal): {}", exc)
+        _stream_stop = lambda: None  # noqa: E731
+
     yield
 
     _sched_shutdown()
+    try:
+        await _stream_stop()
+    except Exception:
+        pass
     await close_db()
 
 

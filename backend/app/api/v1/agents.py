@@ -173,6 +173,16 @@ async def control_agent(
         agent.winding_down = False
         agent.protect_mode = False
         agent.last_error = None
+        # Start real-time WebSocket stream for live agents.
+        if not agent.is_paper_trade and agent.api_key_id:
+            try:
+                from app.models.api_key import ApiKey as ApiKeyModel
+                from app.services.position_stream import register_api_key
+                api_key_doc = await ApiKeyModel.get(agent.api_key_id)
+                if api_key_doc:
+                    await register_api_key(api_key_doc)
+            except Exception:
+                pass
     elif body.action == "pause":
         agent.status = "paused"
     else:
