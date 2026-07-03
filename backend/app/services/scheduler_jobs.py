@@ -154,14 +154,21 @@ async def reconcile_exchange_positions() -> dict:
                     if str(pos.symbol).upper() not in exchange_symbols:
                         # Guard: skip positions younger than 2 minutes — Bitget's
                         # position API may not reflect a just-placed market order yet.
-                        from datetime import timezone as _tz
-                        age_secs = (
-                            datetime.now(_tz.utc) - pos.opened_at
-                        ).total_seconds() if pos.opened_at else 999
+                        try:
+                            from datetime import timezone as _tz
+                            opened = pos.opened_at
+                            if opened is not None:
+                                if opened.tzinfo is None:
+                                    opened = opened.replace(tzinfo=_tz.utc)
+                                age_secs = (datetime.now(_tz.utc) - opened).total_seconds()
+                            else:
+                                age_secs = 999
+                        except Exception:
+                            age_secs = 999
                         if age_secs < 120:
-                            logger.debug(
+                            logger.info(
                                 "agent {} reconcile: skipping {:.0f}s-old {} position"
-                                " (may not be visible on exchange yet)",
+                                " (Bitget API not yet showing new order)",
                                 agent.id, age_secs, pos.symbol,
                             )
                             continue

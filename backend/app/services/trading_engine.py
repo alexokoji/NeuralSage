@@ -639,13 +639,21 @@ class TradingEngine:
                     # A market order placed seconds ago may not appear in
                     # get_positions() yet — skip positions opened within the
                     # last 2 minutes so we don't false-close a brand-new trade.
-                    age_secs = (
-                        datetime.now(timezone.utc) - pos.opened_at
-                    ).total_seconds() if pos.opened_at else 999
+                    try:
+                        opened = pos.opened_at
+                        if opened is not None:
+                            # Normalise to UTC-aware so subtraction never raises TypeError
+                            if opened.tzinfo is None:
+                                opened = opened.replace(tzinfo=timezone.utc)
+                            age_secs = (datetime.now(timezone.utc) - opened).total_seconds()
+                        else:
+                            age_secs = 999
+                    except Exception:
+                        age_secs = 999
                     if age_secs < 120:
-                        logger.debug(
+                        logger.info(
                             "agent {} {} skipping reconcile for {:.0f}s-old position"
-                            " (not yet visible on exchange)",
+                            " (Bitget API not yet showing new order)",
                             agent.id, pos.symbol, age_secs,
                         )
                         continue
