@@ -186,20 +186,32 @@ class BitgetPrivateStream:
             raw_sym = str(order.get("symbol") or order.get("instId") or "")
             symbol = raw_sym.upper().replace("_UMCBL", "").replace("_DMCBL", "")
 
+            # Bitget v2 may send booleans as strings ("false", "NO") — use this helper.
+            def _bitget_bool(key: str) -> bool:
+                val = order.get(key)
+                if val is None:
+                    return False
+                if isinstance(val, bool):
+                    return val
+                return str(val).lower() in ("true", "yes", "1")
+
             fill = {
                 "symbol": symbol,
                 "order_id": str(order.get("ordId") or order.get("orderId") or ""),
                 "client_order_id": str(order.get("clOrdId") or order.get("clientOid") or ""),
                 "side": str(order.get("side") or "").lower(),
+                # tradeSide: "open" = entry, "close" = SL/TP/stop exit — most reliable signal
+                "trade_side": str(order.get("tradeSide") or order.get("trade_side") or "").lower(),
                 "avg_fill_price": float(order.get("avgPx") or order.get("priceAvg") or 0),
                 "filled_qty": float(order.get("accFillSz") or order.get("baseVolume") or 0),
                 "pnl": float(order.get("pnl") or order.get("profit") or 0),
-                "reduce_only": bool(order.get("reduceOnly") or order.get("reduce_only")),
+                "reduce_only": _bitget_bool("reduceOnly") or _bitget_bool("reduce_only"),
                 "closed_at_ms": int(order.get("uTime") or order.get("cTime") or 0),
             }
             logger.info(
-                "bitget_ws [{}] ORDER FILLED: {} {} @ {} pnl={}",
-                self._key_id, symbol, fill["side"], fill["avg_fill_price"], fill["pnl"],
+                "bitget_ws [{}] ORDER FILLED: {} {} trade_side={} @ {} pnl={}",
+                self._key_id, symbol, fill["side"], fill["trade_side"] or "?",
+                fill["avg_fill_price"], fill["pnl"],
             )
             try:
                 await self._on_fill(fill)

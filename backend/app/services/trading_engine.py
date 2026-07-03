@@ -63,27 +63,34 @@ class TradingEngine:
             agent.id, agent.tick_count, agent.status, agent.recovery_mode,
             agent.session_trade_count, agent.total_trades, agent.trading_pairs,
         )
-        # Auto-normalize tiny accounts: apply tighter stop-loss defaults and
-        # relax max_risk_per_trade so the RiskEngine can size a non-zero qty.
+        # Auto-normalize tiny accounts: relax max_risk_per_trade so the
+        # RiskEngine can size a non-zero qty.  We no longer touch stop_loss_pct
+        # here — SL comes from the strategy's own default_params merged with
+        # agent.strategy_params, keeping each strategy's design intact.
         try:
             cap = float(agent.assigned_capital or 0)
             if cap > 0 and cap <= self._SMALL_ACCOUNT_CAP_THRESHOLD:
-                sp = agent.strategy_params or {}
-                cur_sl = float(sp.get("stop_loss_pct") or 0)
                 applied = False
-                # For tiny accounts the SL must be wide enough that the qty
-                # calculation produces a result above the exchange minimum.
-                # A very tight SL (e.g. 0.10%) forces a huge qty (big notional,
-                # high leverage) relative to the balance.  Clamp to 0.5% so the
-                # position stays within a manageable leverage band.
-                # Only inject a default SL when none is configured at all.
-                # Do NOT widen a strategy's intentionally tight SL (e.g. micro
-                # scalping uses 0.10% by design — overriding to 0.5% turns it
-                # into a swing-trade stop that never gets hit on 1m scalps).
-                if cur_sl == 0:
-                    sp["stop_loss_pct"] = float(self._SMALL_ACCOUNT_DEFAULT_SL)
+                # One-time cleanup: remove stale stop_loss_pct that was written
+                # by older normalization code.  If the saved value exactly matches
+                # the old 0.5% default AND the strategy's own SL is tighter,
+                # it's a leftover override — remove it so the strategy default wins.
+                sp = dict(agent.strategy_params or {})
+                saved_sl = float(sp.get("stop_loss_pct") or 0)
+                strat_default_sl = float((strategy.default_params or {}).get("stop_loss_pct", 0))
+                if (
+                    saved_sl == self._SMALL_ACCOUNT_DEFAULT_SL
+                    and strat_default_sl > 0
+                    and strat_default_sl < saved_sl
+                ):
+                    sp.pop("stop_loss_pct", None)
                     agent.strategy_params = sp
                     applied = True
+                    logger.info(
+                        "agent {} cleaned stale stop_loss_pct={:.2f}% from"
+                        " strategy_params (strategy default={:.2f}%)",
+                        agent.id, saved_sl, strat_default_sl,
+                    )
                 # Ensure max_risk_per_trade is at least the tiny-account default.
                 # Note: RiskEngine.cap_risk_per_trade also allows 5% for capital <= $50.
                 if (agent.max_risk_per_trade or 0) < self._SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT:
@@ -92,11 +99,8 @@ class TradingEngine:
                 if applied:
                     logger.info(
                         "agent {} small-account normalization: capital=${:.2f},"
-                        " stop_loss_pct={:.2f}%, max_risk_per_trade={:.2f}%",
-                        agent.id,
-                        cap,
-                        sp.get("stop_loss_pct", cur_sl),
-                        agent.max_risk_per_trade,
+                        " max_risk_per_trade={:.2f}%",
+                        agent.id, cap, agent.max_risk_per_trade,
                     )
         except Exception as exc:
             logger.debug("agent {} small-account normalization error: {}", agent.id, exc)
@@ -862,8 +866,10 @@ class TradingEngine:
 
             side: str = "long" if signal.action == "enter_long" else "short"
 
-            # Use strategy defaults for SL/TP, not AI suggestions
-            strat_params = agent.strategy_params or {}
+            # Merge strategy design defaults with any agent-level overrides.
+            # Strategy default_params (e.g. 0.10% SL for micro_scalping) are
+            # the base; agent.strategy_params can tighten/widen from there.
+            strat_params = strategy.merge_params(agent.strategy_params)
             default_sl = float(strat_params.get("stop_loss_pct", 1.0))
             default_tp = float(strat_params.get("take_profit_pct",
                               strat_params.get("profit_target_pct", 2.5)))
@@ -1412,6 +1418,7 @@ class TradingEngine:
 
         logger.info("agent {} loss streak after close: {}", agent.id, loss_streak)
 
+        from app.config import settings  # local import avoids circular dependency
         max_losses = getattr(settings, "MAX_CONSECUTIVE_LOSSES", 3)
 
         if loss_streak >= max_losses * 2:

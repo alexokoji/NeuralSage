@@ -135,6 +135,7 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
     avg_price = float(fill["avg_fill_price"] or 0)
     exchange_pnl = float(fill["pnl"] or 0)
     fill_side = str(fill.get("side") or "").lower()
+    trade_side = str(fill.get("trade_side") or "").lower()  # "open" | "close" | ""
     is_reduce_only = bool(fill.get("reduce_only"))
 
     if avg_price <= 0:
@@ -143,12 +144,18 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
 
     # Opening orders (buy to enter long, sell to enter short) also fire fill
     # events — we must NOT close positions on those.  Only act on fills that
-    # are closing the position:
-    #   • reduce_only flag is set, OR
-    #   • fill side is opposite to the position side
-    #     (sell fill → closes a long; buy fill → closes a short)
-    # If neither condition is satisfied this is an entry fill — ignore it.
+    # are closing the position.
+    #
+    # Priority:
+    #   1. tradeSide field: "close" = exit fill, "open" = entry fill (most reliable)
+    #   2. reduce_only flag: True means it can only reduce an existing position
+    #   3. Fill direction opposite to position side (sell→closes long, buy→closes short)
     def _is_closing_fill(pos_side: str) -> bool:
+        if trade_side == "close":
+            return True
+        if trade_side == "open":
+            return False
+        # tradeSide not available — fall back to other signals
         if is_reduce_only:
             return True
         if pos_side == "long" and fill_side == "sell":
