@@ -118,7 +118,7 @@ class BitgetPrivateStream:
 
     async def _authenticate(self, ws) -> None:
         ts = str(int(time.time()))
-        await ws.send(json.dumps({
+        login_msg = json.dumps({
             "op": "login",
             "args": [{
                 "apiKey": self._key,
@@ -126,11 +126,16 @@ class BitgetPrivateStream:
                 "timestamp": ts,
                 "sign": self._sign(ts),
             }],
-        }))
-        # Wait for login ack (with timeout)
-        for _ in range(5):
-            raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            logger.debug("bitget_ws [{}] auth recv: {}", self._key_id, raw[:200] if isinstance(raw, str) else raw)
+        })
+        logger.debug("bitget_ws [{}] sending login (key={}...)", self._key_id, self._key[:8])
+        await ws.send(login_msg)
+        # Wait for login ack — use 15s timeout; Bitget can be slow to respond.
+        for _ in range(10):
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=15)
+            except asyncio.TimeoutError:
+                raise ConnectionError("bitget WS auth: login ack timed out after 15s")
+            logger.debug("bitget_ws [{}] auth recv: {}", self._key_id, raw[:300] if isinstance(raw, str) else raw)
             msg = json.loads(raw) if raw != "pong" else {}
             code = msg.get("code")
             if msg.get("event") == "login" and str(code) == "0":
@@ -138,7 +143,7 @@ class BitgetPrivateStream:
                 return
             if msg.get("event") == "error":
                 raise ConnectionError(f"bitget WS auth error: {msg}")
-        raise ConnectionError("bitget WS auth: no ack received")
+        raise ConnectionError("bitget WS auth: no ack in 10 messages")
 
     async def _subscribe(self, ws) -> None:
         await ws.send(json.dumps({

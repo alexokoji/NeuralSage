@@ -711,20 +711,27 @@ class TradingEngine:
                 pool = close_orders if close_orders else qty_matches
                 actual_fill = max(pool, key=lambda o: o["closed_at_ms"])
 
+        # Bitget taker fee: 0.06% per side = 0.12% round-trip on notional.
+        _fee_rate = 0.00120
+
         if actual_fill and actual_fill["avg_fill_price"] > 0:
             exit_price = actual_fill["avg_fill_price"]
             if actual_fill["pnl"] != 0:
+                # Use exchange-reported PnL — already net of fees.
                 gross = actual_fill["pnl"]
             else:
-                # Exchange PnL missing — estimate from prices (excludes fees;
-                # will be slightly optimistic but directionally correct)
-                gross = (exit_price - entry_price) * qty * (1 if pos.side == "long" else -1)
+                # Exchange PnL missing; estimate from prices and deduct fees.
+                raw_pnl = (exit_price - entry_price) * qty * (1 if pos.side == "long" else -1)
+                fees = entry_price * qty * _fee_rate
+                gross = raw_pnl - fees
             price_source = "exchange_fill"
         else:
             exit_price = float(pos.current_price or entry_price)
-            gross = (exit_price - entry_price) * qty
+            raw_pnl = (exit_price - entry_price) * qty
             if pos.side == "short":
-                gross = -gross
+                raw_pnl = -raw_pnl
+            fees = entry_price * qty * _fee_rate
+            gross = raw_pnl - fees
             price_source = "candle_estimate"
 
         # Persist the closure.

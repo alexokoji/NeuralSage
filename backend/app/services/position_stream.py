@@ -182,13 +182,15 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
                 entry_price = float(pos.entry_price)
                 qty = float(pos.quantity or 0)
 
-                # Use exchange-reported PnL when available (includes fees).
+                # Use exchange-reported PnL when available (already net of fees).
                 if exchange_pnl != 0:
                     gross = exchange_pnl
                 else:
-                    gross = (avg_price - entry_price) * qty
+                    # Bitget taker fee 0.06% per side = 0.12% round-trip.
+                    raw_pnl = (avg_price - entry_price) * qty
                     if pos.side == "short":
-                        gross = -gross
+                        raw_pnl = -raw_pnl
+                    gross = raw_pnl - (entry_price * qty * 0.00120)
 
                 # Persist position closure.
                 pos.is_open = False
