@@ -223,7 +223,16 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
                 agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
                 if gross > 0:
                     agent.winning_trades = (agent.winning_trades or 0) + 1
+                    agent.recovery_mode = False
                 await agent.save()
+
+                # Check loss streak — may trigger recovery mode or pause.
+                if gross < 0:
+                    try:
+                        from app.services.trading_engine import TradingEngine
+                        await TradingEngine()._check_loss_streak_and_recover(agent, symbol)
+                    except Exception as _exc:
+                        logger.debug("position_stream: streak check failed: {}", _exc)
 
                 # Feed the learning system.
                 try:
