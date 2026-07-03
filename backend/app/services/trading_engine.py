@@ -761,6 +761,7 @@ class TradingEngine:
         agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
+            agent.recovery_mode = False  # winning trade clears recovery mode
         await agent.save()
 
         # Feed the learning system.
@@ -1178,6 +1179,11 @@ class TradingEngine:
                         agent.id, symbol, avail, target_leverage, actual_leverage,
                         max_notional, notional,
                     )
+                    # Hard cap: never risk more than 25% of balance on one trade,
+                    # regardless of leverage. Prevents blowing the account on a
+                    # single position when leverage is low.
+                    max_notional = min(max_notional, avail * 0.25)
+
                     _BITGET_MIN_NOTIONAL = 5.0  # Bitget minimum order size in USDT
                     if max_notional < _BITGET_MIN_NOTIONAL:
                         logger.warning(
@@ -1357,6 +1363,7 @@ class TradingEngine:
         agent.current_week_pnl = float(agent.current_week_pnl or 0) + gross
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
+            agent.recovery_mode = False  # winning trade clears recovery mode
         await agent.save()
 
         # Feed the outcome back into the fleet learning system so other agents
@@ -1484,6 +1491,7 @@ class TradingEngine:
             new_params["position_size_pct"] = min(new_params["position_size_pct"], 1.5)
 
         agent.strategy_params = new_params
+        agent.recovery_mode = True  # halves position size until a winning trade
         agent.optimization_params = {
             "score": result.best_score,
             "trigger": "emergency_loss_streak",
