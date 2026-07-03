@@ -29,6 +29,40 @@ from app.services.trading_engine import TradingEngine
 # --------------------------------------------------------------------------- #
 
 
+_PAUSE_COOLDOWN_MINUTES = 30  # auto-resume paused agents after this many minutes
+
+
+async def _auto_resume_paused_agents() -> None:
+    """Re-activate agents that have been paused for >= PAUSE_COOLDOWN_MINUTES.
+
+    The pause is a safety brake after 6 consecutive losses.  Once the cooldown
+    elapses the agent resumes in recovery_mode (half position size) rather than
+    requiring a manual click — this keeps trading flowing while still halving
+    risk until a win clears recovery mode.
+    """
+    from datetime import datetime, timezone, timedelta
+    try:
+        paused = await Agent.find({"status": "paused"}).to_list()
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=_PAUSE_COOLDOWN_MINUTES)
+        for agent in paused:
+            # Use last_tick_at as a proxy for when the agent was last active;
+            # fall back to updated_at if available.
+            last_active = getattr(agent, "last_tick_at", None) or getattr(agent, "updated_at", None)
+            if last_active and last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=timezone.utc)
+            if last_active is None or last_active > cutoff:
+                continue  # paused too recently — wait longer
+            agent.status = "active"
+            agent.recovery_mode = True  # half-size trades until first win
+            await agent.save()
+            logger.info(
+                "agent {} auto-resumed after {}min cooldown (recovery_mode=True)",
+                agent.id, _PAUSE_COOLDOWN_MINUTES,
+            )
+    except Exception as exc:
+        logger.warning("auto-resume check failed: {}", exc)
+
+
 async def run_trading_tick_for_all_agents() -> dict:
     """Iterate every active agent and run one trading tick."""
     processed = 0
@@ -36,6 +70,9 @@ async def run_trading_tick_for_all_agents() -> dict:
     failed = 0
 
     logger.debug("trading tick starting")
+
+    # Auto-resume agents that were paused long enough.
+    await _auto_resume_paused_agents()
 
     try:
         agent_ids = [
@@ -354,7 +391,7 @@ async def run_optimization_sweep() -> dict:
 
     agents = await Agent.find(
         Agent.ai_optimization_enabled == True,  # noqa: E712
-        Agent.status.in_(["active", "paused"]),
+        {"status": {"$in": ["active", "paused"]}},
     ).to_list()
 
     for agent in agents:
