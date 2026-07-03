@@ -1178,10 +1178,13 @@ class TradingEngine:
                         agent.id, symbol, avail, target_leverage, actual_leverage,
                         max_notional, notional,
                     )
-                    if max_notional <= 0:
+                    _BITGET_MIN_NOTIONAL = 5.0  # Bitget minimum order size in USDT
+                    if max_notional < _BITGET_MIN_NOTIONAL:
                         logger.warning(
-                            "agent {} {} skipping order: no free margin (avail=${:.4f})",
-                            agent.id, symbol, avail,
+                            "agent {} {} skipping order: max_notional=${:.2f} below"
+                            " Bitget minimum ${:.2f} (avail=${:.4f} actual_lev={}x)",
+                            agent.id, symbol, max_notional, _BITGET_MIN_NOTIONAL,
+                            avail, actual_leverage,
                         )
                         return
                     if notional > max_notional:
@@ -1193,6 +1196,7 @@ class TradingEngine:
                         )
                         order.quantity = capped_qty
                         quantity = capped_qty
+                        notional = max_notional
                 except ExchangeError as exc:
                     logger.warning("agent {} {} balance check failed: {} — skipping order", agent.id, symbol, exc)
                     return
