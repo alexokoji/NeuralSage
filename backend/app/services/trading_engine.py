@@ -1199,6 +1199,13 @@ class TradingEngine:
 
                     _BITGET_MIN_NOTIONAL = 5.0  # Bitget minimum order size in USDT
                     if max_notional < _BITGET_MIN_NOTIONAL:
+                        msg = (
+                            f"insufficient free margin: ${avail:.4f} available "
+                            f"(need >${_BITGET_MIN_NOTIONAL / actual_leverage:.2f} free for min order at {actual_leverage}x). "
+                            f"Close open positions or deposit more funds."
+                        )
+                        agent.last_error = msg
+                        await agent.save()
                         logger.warning(
                             "agent {} {} skipping order: max_notional=${:.2f} below"
                             " Bitget minimum ${:.2f} (avail=${:.4f} actual_lev={}x)",
