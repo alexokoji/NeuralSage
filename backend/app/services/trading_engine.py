@@ -1179,10 +1179,12 @@ class TradingEngine:
                         agent.id, symbol, avail, target_leverage, actual_leverage,
                         max_notional, notional,
                     )
-                    # Hard cap: never risk more than 25% of balance on one trade,
-                    # regardless of leverage. Prevents blowing the account on a
-                    # single position when leverage is low.
-                    max_notional = min(max_notional, avail * 0.25)
+                    # Hard cap: never commit more than 25% of balance as margin
+                    # on one trade. margin = notional / leverage, so:
+                    # max_notional = avail * 0.25 * leverage
+                    # This allows full leverage use while protecting the account
+                    # from all-in positions at low leverage.
+                    max_notional = min(max_notional, avail * actual_leverage * 0.25)
 
                     _BITGET_MIN_NOTIONAL = 5.0  # Bitget minimum order size in USDT
                     if max_notional < _BITGET_MIN_NOTIONAL:
