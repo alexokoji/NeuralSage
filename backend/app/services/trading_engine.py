@@ -993,6 +993,7 @@ class TradingEngine:
                 },
                 stop_loss_price=sl_price,
                 take_profit_price=tp_price,
+                min_qty=exchange_min,
             )
             logger.debug("agent {} {} _open_trade completed", agent.id, symbol)
 
@@ -1104,6 +1105,7 @@ class TradingEngine:
         risk_payload: dict[str, Any],
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,
+        min_qty: float = 0.0,
     ) -> None:
         # Allow callers to pass explicit rounded prices (recommended).
         sl_price = (
@@ -1205,6 +1207,14 @@ class TradingEngine:
                         order.quantity = capped_qty
                         quantity = capped_qty
                         notional = max_notional
+                    # After capping, verify qty still meets exchange minimum lot size.
+                    if min_qty > 0 and quantity < min_qty:
+                        logger.warning(
+                            "agent {} {} skipping: capped qty {:.6f} < exchange min {:.6f}"
+                            " (notional ${:.2f} at {}x — need more capital or higher leverage)",
+                            agent.id, symbol, quantity, min_qty, notional, actual_leverage,
+                        )
+                        return
                 except ExchangeError as exc:
                     logger.warning("agent {} {} balance check failed: {} — skipping order", agent.id, symbol, exc)
                     return
