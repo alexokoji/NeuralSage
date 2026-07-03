@@ -635,6 +635,20 @@ class TradingEngine:
             # ── Detect exchange-side closure (live trades only) ───────────────
             if not agent.is_paper_trade and exchange_query_ok:
                 if str(pos.symbol).upper() not in exchange_symbols:
+                    # Guard: Bitget's position API has eventual consistency.
+                    # A market order placed seconds ago may not appear in
+                    # get_positions() yet — skip positions opened within the
+                    # last 2 minutes so we don't false-close a brand-new trade.
+                    age_secs = (
+                        datetime.now(timezone.utc) - pos.opened_at
+                    ).total_seconds() if pos.opened_at else 999
+                    if age_secs < 120:
+                        logger.debug(
+                            "agent {} {} skipping reconcile for {:.0f}s-old position"
+                            " (not yet visible on exchange)",
+                            agent.id, pos.symbol, age_secs,
+                        )
+                        continue
                     await self._close_position_from_exchange(
                         agent, api_key, pos, closed_orders_by_symbol
                     )
