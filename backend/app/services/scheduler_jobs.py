@@ -255,6 +255,23 @@ async def reconcile_exchange_positions() -> dict:
                         except Exception:
                             pass
 
+                        # Check loss streak — may trigger recovery mode or pause.
+                        # Critical: reconciliation is the fallback when WS misses fills,
+                        # so this must mirror what position_stream._handle_fill does.
+                        try:
+                            from app.services.trading_engine import TradingEngine
+                            reconcile_agent = await Agent.get(agent.id)
+                            if reconcile_agent:
+                                if gross > 0:
+                                    reconcile_agent.recovery_mode = False
+                                    await reconcile_agent.save()
+                                elif gross < 0:
+                                    await TradingEngine()._check_loss_streak_and_recover(
+                                        reconcile_agent, pos.symbol
+                                    )
+                        except Exception as exc:
+                            logger.debug("agent {} reconcile: streak check failed: {}", agent.id, exc)
+
                         repaired += 1
                         logger.info(
                             "agent {} reconciled position {} ({}) closed by exchange:"
