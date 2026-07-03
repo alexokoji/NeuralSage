@@ -121,10 +121,31 @@ class TradingEngine:
                 agent.trading_pairs = clean_pairs or ["EURUSD"]
                 logger.info("agent {} cleaned crypto pairs from forex agent: {}", agent.id, agent.trading_pairs)
 
-        # --- Daily profit protection (resets every day via rollover) ---
+        # --- Daily profit protection + daily loss limit (both reset via rollover) ---
         capital = float(agent.assigned_capital or 0)
         if capital > 0:
-            day_pnl_pct = (float(agent.current_day_pnl or 0) / capital) * 100
+            day_pnl = float(agent.current_day_pnl or 0)
+            day_pnl_pct = (day_pnl / capital) * 100
+
+            # Hard daily loss limit — pause until midnight rollover resets current_day_pnl.
+            max_loss_pct = float(agent.max_daily_loss or 15)
+            if day_pnl < 0 and abs(day_pnl_pct) >= max_loss_pct and agent.status == "active":
+                agent.status = "paused"
+                agent.last_error = f"daily loss limit {abs(day_pnl_pct):.1f}% >= {max_loss_pct:.0f}%"
+                await agent.save()
+                logger.warning(
+                    "agent {} DAILY LOSS LIMIT: today {:.2f}% >= {:.1f}% — paused until rollover",
+                    agent.id, abs(day_pnl_pct), max_loss_pct,
+                )
+                await NotificationService.create(
+                    user_id=agent.user_id,
+                    type="agent_status",
+                    title=f"{agent.name} hit daily loss limit ({abs(day_pnl_pct):.1f}% today)",
+                    message=f"Trading paused to protect capital. Resets at midnight rollover. Max allowed: {max_loss_pct:.0f}%.",
+                    data={"agent_id": str(agent.id), "trigger": "daily_loss_limit"},
+                )
+                return {"skipped": True, "reason": "daily_loss_limit"}
+
             protect_threshold = float(agent.profit_protect_pct or 15)
             if day_pnl_pct >= protect_threshold and not agent.protect_mode:
                 agent.protect_mode = True
@@ -989,6 +1010,13 @@ class TradingEngine:
                 stop_loss_price=sl_price,
                 take_profit_price=tp_price,
                 min_qty=exchange_min,
+                decision_context={
+                    "ai_available": ai_available,
+                    "strategy_params_snapshot": strat_params,
+                    "sl_source": "strategy_default" if ai_sl >= default_sl else "ai_tightened",
+                    "tp_source": "min_floor" if tp_pct == _MIN_TP_PCT else ("ai_suggested" if ai_tp > default_tp else "strategy_default"),
+                    "recovery_mode": bool(agent.recovery_mode),
+                },
             )
             logger.debug("agent {} {} _open_trade completed", agent.id, symbol)
 
@@ -1006,6 +1034,7 @@ class TradingEngine:
         take_profit_pct: float,
         signal,
         risk_payload: dict[str, Any],
+        decision_context: dict[str, Any] | None = None,
     ) -> None:
         sl_price = (
             entry_price * (1 - stop_loss_pct / 100)
@@ -1037,6 +1066,12 @@ class TradingEngine:
             signal_data={
                 "confidence": signal.confidence,
                 "reason": signal.reason,
+                # Decision Ledger — immutable snapshot of why this trade was opened
+                "ai_available": (decision_context or {}).get("ai_available", True),
+                "sl_source": (decision_context or {}).get("sl_source", "unknown"),
+                "tp_source": (decision_context or {}).get("tp_source", "unknown"),
+                "recovery_mode_at_entry": (decision_context or {}).get("recovery_mode", False),
+                "strategy_params_snapshot": (decision_context or {}).get("strategy_params_snapshot", {}),
                 **(signal.metadata or {}),
             },
             risk_checks=risk_payload,
@@ -1101,6 +1136,7 @@ class TradingEngine:
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,
         min_qty: float = 0.0,
+        decision_context: dict[str, Any] | None = None,
     ) -> None:
         # Allow callers to pass explicit rounded prices (recommended).
         sl_price = (
@@ -1255,6 +1291,7 @@ class TradingEngine:
             take_profit_pct=take_profit_pct,
             signal=signal,
             risk_payload=risk_payload,
+            decision_context=decision_context,
         )
 
     async def _close_position(
