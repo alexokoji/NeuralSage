@@ -338,10 +338,20 @@ class BitgetClient(ExchangeClient):
                 "/api/v2/mix/account/account",
                 params={"productType": "USDT-FUTURES", "marginCoin": "USDT", "symbol": symbol},
             )
-            lev = int(float(data.get("leverage") or 1))
+            # Cross-margin accounts use crossedMarginLeverage; fixed use fixedLongLeverage.
+            # Fall through each field name until we get a non-zero value.
+            raw = (
+                data.get("crossedMarginLeverage")
+                or data.get("leverage")
+                or data.get("fixedLongLeverage")
+                or data.get("fixedShortLeverage")
+                or 1
+            )
+            lev = int(float(raw))
+            logger.info("bitget get_account_leverage {}: raw_data keys={} lev={}", symbol, list(data.keys()), lev)
             return max(lev, 1)
         except Exception as exc:
-            logger.debug("bitget get_account_leverage {} failed: {}", symbol, exc)
+            logger.info("bitget get_account_leverage {} failed: {}", symbol, exc)
             return 1
 
     async def get_positions(self) -> list[dict[str, Any]]:
