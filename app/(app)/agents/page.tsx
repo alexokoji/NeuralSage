@@ -262,21 +262,30 @@ function AgentCard({
         </span>
       </div>
 
-      {/* Agent state banner */}
+      {/* Agent state banners */}
       {agent.protect_mode && (
         <div className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg animate-slide-up">
           <Shield className="w-3 h-3 text-emerald-400" />
           <span className="text-[10px] text-emerald-400 font-medium">Daily target hit — protecting gains (higher confidence needed). Resets tomorrow.</span>
         </div>
       )}
-
-      {/* Session trades counter */}
-      {agent.status === 'active' && (
-        <div className="flex justify-between text-[10px] text-muted-foreground">
-          <span>Session trades</span>
-          <span className="font-mono">{agent.session_trade_count ?? 0}</span>
+      {agent.recovery_mode && agent.status === 'active' && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-orange-500/10 border border-orange-500/20 rounded-lg">
+          <Zap className="w-3 h-3 text-orange-400" />
+          <span className="text-[10px] text-orange-400 font-medium">Recovery mode — trading at half size after losses.</span>
         </div>
       )}
+      {agent.status === 'paused' && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg">
+          <span className="text-[10px] text-red-400 font-medium">Auto-paused after consecutive losses. Resume when ready.</span>
+        </div>
+      )}
+
+      {/* Session trades counter — always visible so you can track even when paused */}
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        <span>Session trades</span>
+        <span className="font-mono">{agent.session_trade_count ?? 0}</span>
+      </div>
 
       {/* Live activity row */}
       <div className="border-t border-border pt-3 space-y-1.5">

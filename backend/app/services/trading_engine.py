@@ -58,6 +58,11 @@ class TradingEngine:
 
         agent.last_tick_at = now
         agent.tick_count = (agent.tick_count or 0) + 1
+        logger.info(
+            "agent {} tick#{} status={} recovery={} session_trades={} total_trades={} pairs={}",
+            agent.id, agent.tick_count, agent.status, agent.recovery_mode,
+            agent.session_trade_count, agent.total_trades, agent.trading_pairs,
+        )
         # Auto-normalize tiny accounts: apply tighter stop-loss defaults and
         # relax max_risk_per_trade so the RiskEngine can size a non-zero qty.
         try:
