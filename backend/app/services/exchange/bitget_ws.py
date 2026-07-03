@@ -77,8 +77,8 @@ class BitgetPrivateStream:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning("bitget_ws [{}] disconnected ({}), retry in {:.0f}s",
-                               self._key_id, exc, delay)
+                logger.warning("bitget_ws [{}] disconnected ({}: {}), retry in {:.0f}s",
+                               self._key_id, type(exc).__name__, exc, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
@@ -89,7 +89,7 @@ class BitgetPrivateStream:
             ping_timeout=10,
             close_timeout=5,
         ) as ws:
-            logger.debug("bitget_ws [{}] connected", self._key_id)
+            logger.info("bitget_ws [{}] connected — starting auth", self._key_id)
             await self._authenticate(ws)
             await self._subscribe(ws)
             # Keep-alive: Bitget requires a ping every 30s
@@ -127,19 +127,22 @@ class BitgetPrivateStream:
                 "sign": self._sign(ts),
             }],
         })
-        logger.debug("bitget_ws [{}] sending login (key={}...)", self._key_id, self._key[:8])
-        await ws.send(login_msg)
+        logger.info("bitget_ws [{}] sending login (key={}...)", self._key_id, self._key[:8])
+        try:
+            await ws.send(login_msg)
+        except Exception as exc:
+            raise ConnectionError(f"bitget WS send failed before auth: {exc}") from exc
         # Wait for login ack — use 15s timeout; Bitget can be slow to respond.
         for _ in range(10):
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=15)
             except asyncio.TimeoutError:
                 raise ConnectionError("bitget WS auth: login ack timed out after 15s")
-            logger.debug("bitget_ws [{}] auth recv: {}", self._key_id, raw[:300] if isinstance(raw, str) else raw)
+            logger.info("bitget_ws [{}] auth recv: {}", self._key_id, raw[:300] if isinstance(raw, str) else raw)
             msg = json.loads(raw) if raw != "pong" else {}
             code = msg.get("code")
             if msg.get("event") == "login" and str(code) == "0":
-                logger.debug("bitget_ws [{}] authenticated", self._key_id)
+                logger.info("bitget_ws [{}] authenticated OK", self._key_id)
                 return
             if msg.get("event") == "error":
                 raise ConnectionError(f"bitget WS auth error: {msg}")
