@@ -869,7 +869,12 @@ class TradingEngine:
             # Merge strategy design defaults with any agent-level overrides.
             # Strategy default_params (e.g. 0.10% SL for micro_scalping) are
             # the base; agent.strategy_params can tighten/widen from there.
-            strat_params = strategy.merge_params(agent.strategy_params)
+            _strategy_type = agent.strategy.type if agent.strategy else None
+            _strat_obj = get_strategy(_strategy_type) if _strategy_type else None
+            strat_params = (
+                _strat_obj.merge_params(agent.strategy_params)
+                if _strat_obj else (agent.strategy_params or {})
+            )
             default_sl = float(strat_params.get("stop_loss_pct", 1.0))
             default_tp = float(strat_params.get("take_profit_pct",
                               strat_params.get("profit_target_pct", 2.5)))
