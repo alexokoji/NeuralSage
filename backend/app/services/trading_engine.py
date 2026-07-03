@@ -587,14 +587,16 @@ class TradingEngine:
         return positions[0] if positions else None
 
     async def _reconcile_open_positions(self, agent: Agent, api_key, client) -> None:
-        """Sync open positions every tick — mirrors paper trading's SL/TP cadence.
+        """Update unrealized P&L for open positions every tick.
 
-        For live agents:
-          1. Ask the exchange which positions are still open.
-          2. Any DB position no longer on the exchange was closed server-side
-             (SL/TP triggered, liquidation, manual close).  Fetch the real fill
-             price from order history and close it properly — same path as paper.
-          3. For still-open positions update unrealized P&L from latest candle.
+        Close detection is intentionally NOT done here — it belongs to:
+          • position_stream.py  — real-time via Bitget private WebSocket (primary)
+          • scheduler_jobs.py   — 5-min fallback for WS-missed fills
+
+        Doing close detection in every 60s tick via get_positions() was causing
+        false-closes: a market order placed seconds earlier wasn't reflected in
+        Bitget's position API yet, so the position appeared missing and was
+        immediately closed in the DB while still open on the exchange.
         """
         positions = await Position.find(
             Position.agent_id == agent.id,
@@ -603,70 +605,7 @@ class TradingEngine:
         if not positions:
             return
 
-        # ── For live agents: detect exchange-closed positions every tick ──────
-        exchange_symbols: set[str] = set()
-        closed_orders_by_symbol: dict[str, list[dict]] = {}
-        exchange_query_ok = False
-
-        if not agent.is_paper_trade:
-            try:
-                exchange_positions = await client.get_positions() or []
-                exchange_symbols = {
-                    str(p.get("symbol") or "").upper()
-                    for p in exchange_positions
-                    if p and str(p.get("symbol") or "").strip()
-                }
-                exchange_query_ok = True
-            except AttributeError:
-                pass  # exchange doesn't support get_positions
-            except Exception as exc:
-                logger.debug("agent {} get_positions failed in reconcile: {}", agent.id, exc)
-
-            if exchange_query_ok:
-                # Pre-fetch last 2 h of closed orders to resolve fill prices.
-                try:
-                    import time as _time
-                    lookback_ms = int((_time.time() - 7_200) * 1000)
-                    raw_closed = await client.get_closed_orders(limit=50, start_ms=lookback_ms)
-                    for o in raw_closed:
-                        closed_orders_by_symbol.setdefault(o["symbol"], []).append(o)
-                except AttributeError:
-                    pass
-                except Exception as exc:
-                    logger.debug("agent {} get_closed_orders failed: {}", agent.id, exc)
-
-        for pos in positions:
-            # ── Detect exchange-side closure (live trades only) ───────────────
-            if not agent.is_paper_trade and exchange_query_ok:
-                if str(pos.symbol).upper() not in exchange_symbols:
-                    # Guard: Bitget's position API has eventual consistency.
-                    # A market order placed seconds ago may not appear in
-                    # get_positions() yet — skip positions opened within the
-                    # last 2 minutes so we don't false-close a brand-new trade.
-                    try:
-                        opened = pos.opened_at
-                        if opened is not None:
-                            # Normalise to UTC-aware so subtraction never raises TypeError
-                            if opened.tzinfo is None:
-                                opened = opened.replace(tzinfo=timezone.utc)
-                            age_secs = (datetime.now(timezone.utc) - opened).total_seconds()
-                        else:
-                            age_secs = 999
-                    except Exception:
-                        age_secs = 999
-                    if age_secs < 120:
-                        logger.info(
-                            "agent {} {} skipping reconcile for {:.0f}s-old position"
-                            " (Bitget API not yet showing new order)",
-                            agent.id, pos.symbol, age_secs,
-                        )
-                        continue
-                    await self._close_position_from_exchange(
-                        agent, api_key, pos, closed_orders_by_symbol
-                    )
-                    continue  # position is now closed — skip price update
-
-            # ── Update unrealized P&L for still-open positions ────────────────
+        # ── Update unrealized P&L for still-open positions ────────────────
             try:
                 raw = await client.get_candles(pos.symbol, agent.timeframe or "5m", limit=2)
                 if raw:
