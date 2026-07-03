@@ -76,7 +76,11 @@ class TradingEngine:
                 # A very tight SL (e.g. 0.10%) forces a huge qty (big notional,
                 # high leverage) relative to the balance.  Clamp to 0.5% so the
                 # position stays within a manageable leverage band.
-                if cur_sl == 0 or cur_sl < self._SMALL_ACCOUNT_DEFAULT_SL:
+                # Only inject a default SL when none is configured at all.
+                # Do NOT widen a strategy's intentionally tight SL (e.g. micro
+                # scalping uses 0.10% by design — overriding to 0.5% turns it
+                # into a swing-trade stop that never gets hit on 1m scalps).
+                if cur_sl == 0:
                     sp["stop_loss_pct"] = float(self._SMALL_ACCOUNT_DEFAULT_SL)
                     agent.strategy_params = sp
                     applied = True
@@ -920,7 +924,6 @@ class TradingEngine:
             side: str = "long" if signal.action == "enter_long" else "short"
 
             # Use strategy defaults for SL/TP, not AI suggestions
-            # AI can suggest tighter values but never looser than strategy defaults
             strat_params = agent.strategy_params or {}
             default_sl = float(strat_params.get("stop_loss_pct", 1.0))
             default_tp = float(strat_params.get("take_profit_pct",
@@ -934,9 +937,17 @@ class TradingEngine:
             # TP: use the LARGER of strategy default and AI suggestion
             tp_pct = max(ai_tp, default_tp)
 
-            # Enforce minimum 1.5:1 reward-to-risk ratio
-            if tp_pct < sl_pct * 1.5:
+            # For scalping strategies the strategy author already chose a tight
+            # TP/SL ratio (e.g. 0.30% TP / 0.10% SL = 3:1).  Only enforce a
+            # floor when the ratio would be dangerously inverted (TP < SL),
+            # meaning we'd risk more than we stand to gain.
+            if tp_pct < sl_pct:
                 tp_pct = round(sl_pct * 1.5, 3)
+
+            logger.info(
+                "agent {} {} SL/TP: sl={:.3f}% tp={:.3f}% (strategy defaults sl={:.3f}% tp={:.3f}%)",
+                agent.id, symbol, sl_pct, tp_pct, default_sl, default_tp,
+            )
 
             decision = await RiskEngine.evaluate_entry(
                 agent,
@@ -1563,10 +1574,16 @@ class TradingEngine:
             n_calls=15,
         )
 
-        # Apply tighter risk overrides on top of optimized params
+        # Apply tighter risk overrides on top of optimized params.
+        # Use the strategy's own default SL as the ceiling — never let the
+        # optimizer widen SL beyond what the strategy was designed for.
         new_params = dict(result.best_params)
+        strategy_default_sl = float((strat.default_params or {}).get("stop_loss_pct", 0.5))
         if "stop_loss_pct" in new_params:
-            new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], 0.8)
+            new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], strategy_default_sl)
+        if "profit_target_pct" in new_params:
+            strategy_default_tp = float((strat.default_params or {}).get("profit_target_pct", 2.5))
+            new_params["profit_target_pct"] = min(new_params["profit_target_pct"], strategy_default_tp * 2)
         if "min_confidence" in new_params:
             new_params["min_confidence"] = max(new_params["min_confidence"], 0.7)
         if "position_size_pct" in new_params:
