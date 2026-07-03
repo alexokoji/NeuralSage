@@ -177,7 +177,14 @@ class BitgetClient(ExchangeClient):
         out: list[Balance] = []
         for r in items:
             total = float(r.get("equity") or r.get("usdtEquity") or 0)
-            avail = float(r.get("available") or r.get("crossedMaxAvailable") or total)
+            # crossedMaxAvailable is the actual margin free for new cross-margin
+            # positions (total minus locked margin). Use it over the raw "available"
+            # field which can overstate what Bitget will actually accept.
+            avail = float(
+                r.get("crossedMaxAvailable")
+                or r.get("available")
+                or total
+            )
             if total > 0:
                 out.append(
                     Balance(

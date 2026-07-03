@@ -1177,7 +1177,7 @@ class TradingEngine:
                 try:
                     balances = await client.get_balances()
                     avail = max((b.available for b in balances), default=0.0)
-                    max_notional = avail * actual_leverage * 0.85  # 15% buffer for fees/margin
+                    max_notional = avail * actual_leverage * 0.70  # 30% buffer for fees/margin/Bitget internal reserve
                     notional = quantity * entry_price
                     logger.info(
                         "agent {} {} balance check: avail=${:.4f} target_lev={}x"
