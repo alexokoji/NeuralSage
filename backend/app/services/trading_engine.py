@@ -887,10 +887,13 @@ class TradingEngine:
             # TP: use the LARGER of strategy default and AI suggestion
             tp_pct = max(ai_tp, default_tp)
 
-            # For scalping strategies the strategy author already chose a tight
-            # TP/SL ratio (e.g. 0.30% TP / 0.10% SL = 3:1).  Only enforce a
-            # floor when the ratio would be dangerously inverted (TP < SL),
-            # meaning we'd risk more than we stand to gain.
+            # Hard floor: TP must clear round-trip fees (Bitget taker 0.06% × 2)
+            # plus a small margin of profit.  Without this a near-zero TP will
+            # be hit immediately with guaranteed loss after fees.
+            _MIN_TP_PCT = 0.25
+            tp_pct = max(tp_pct, _MIN_TP_PCT)
+
+            # Also ensure TP > SL (no inverted risk/reward).
             if tp_pct < sl_pct:
                 tp_pct = round(sl_pct * 1.5, 3)
 
@@ -1534,11 +1537,19 @@ class TradingEngine:
             new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], strategy_default_sl)
         if "profit_target_pct" in new_params:
             strategy_default_tp = float((strat.default_params or {}).get("profit_target_pct", 2.5))
-            new_params["profit_target_pct"] = min(new_params["profit_target_pct"], strategy_default_tp * 2)
+            # Floor: TP must cover round-trip fees + margin; cap at 2× strategy default.
+            new_params["profit_target_pct"] = max(
+                min(new_params["profit_target_pct"], strategy_default_tp * 2),
+                0.25,
+            )
         if "min_confidence" in new_params:
             new_params["min_confidence"] = max(new_params["min_confidence"], 0.7)
         if "position_size_pct" in new_params:
             new_params["position_size_pct"] = min(new_params["position_size_pct"], 1.5)
+        # Cap deviation_pct so the optimizer can't make the signal impossible to trigger.
+        if "deviation_pct" in new_params:
+            strategy_default_dev = float((strat.default_params or {}).get("deviation_pct", 0.5))
+            new_params["deviation_pct"] = min(new_params["deviation_pct"], strategy_default_dev * 3)
 
         agent.strategy_params = new_params
         agent.recovery_mode = True  # halves position size until a winning trade
