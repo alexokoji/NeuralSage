@@ -231,6 +231,7 @@ async def _handle_fill(api_key_id: str, fill: dict) -> None:
                 if gross > 0:
                     agent.winning_trades = (agent.winning_trades or 0) + 1
                     agent.recovery_mode = False
+                    agent.pause_cycle_count = 0
                 await agent.save()
 
                 # Check loss streak — may trigger recovery mode or pause.

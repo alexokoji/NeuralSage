@@ -757,6 +757,7 @@ class TradingEngine:
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
             agent.recovery_mode = False  # winning trade clears recovery mode
+            agent.pause_cycle_count = 0  # reset pause cycle count on any win
         await agent.save()
 
         # Feed the learning system.
@@ -1415,6 +1416,7 @@ class TradingEngine:
         if gross > 0:
             agent.winning_trades = (agent.winning_trades or 0) + 1
             agent.recovery_mode = False  # winning trade clears recovery mode
+            agent.pause_cycle_count = 0  # reset pause cycle count on any win
         await agent.save()
 
         # Feed the outcome back into the fleet learning system so other agents
@@ -1447,12 +1449,26 @@ class TradingEngine:
 
     async def _check_loss_streak_and_recover(self, agent: Agent, symbol: str) -> None:
         """Called after every losing trade close (all paths). Counts streak and
-        either enters recovery mode (half size) or pauses the agent entirely."""
-        streak_trades = await Trade.find(
+        either enters recovery mode (half size) or pauses the agent entirely.
+
+        Crucially, only losses AFTER last_resumed_at are counted.  Without this
+        boundary, pre-pause losses accumulate across auto-resume cycles and re-
+        trigger a pause on the very first post-resume loss — infinite loop.
+        """
+        # Only count losses that happened after the most recent resume.
+        # This gives the agent a clean streak slate each time it wakes up.
+        query_filters = [
             Trade.agent_id == agent.id,
             Trade.status == "filled",
             Trade.closed_at != None,  # noqa: E711
-        ).sort(-Trade.closed_at).limit(10).to_list()
+        ]
+        last_resumed = getattr(agent, "last_resumed_at", None)
+        if last_resumed:
+            if last_resumed.tzinfo is None:
+                last_resumed = last_resumed.replace(tzinfo=timezone.utc)
+            query_filters.append({"closed_at": {"$gte": last_resumed}})
+
+        streak_trades = await Trade.find(*query_filters).sort(-Trade.closed_at).limit(10).to_list()
 
         loss_streak = 0
         for t in streak_trades:
@@ -1461,26 +1477,32 @@ class TradingEngine:
             else:
                 break
 
-        logger.info("agent {} loss streak after close: {}", agent.id, loss_streak)
+        logger.info(
+            "agent {} loss streak after close: {} (since last_resumed_at={})",
+            agent.id, loss_streak, last_resumed,
+        )
 
         from app.config import settings  # local import avoids circular dependency
         max_losses = getattr(settings, "MAX_CONSECUTIVE_LOSSES", 3)
 
         if loss_streak >= max_losses * 2:
-            # Double the limit → pause trading entirely until manual review.
+            # Double the limit → pause trading entirely.
+            # Auto-resume will re-optimize and reset last_resumed_at so this
+            # streak counter starts fresh from 0 after the cooldown.
             if agent.status == "active":
                 agent.status = "paused"
                 agent.recovery_mode = True
+                agent.pause_cycle_count = int(getattr(agent, "pause_cycle_count", 0) or 0) + 1
                 await agent.save()
                 logger.warning(
-                    "agent {} PAUSED after {} consecutive losses — manual review required",
-                    agent.id, loss_streak,
+                    "agent {} PAUSED after {} consecutive post-resume losses (pause_cycle={})",
+                    agent.id, loss_streak, agent.pause_cycle_count,
                 )
                 await NotificationService.create(
                     user_id=agent.user_id,
                     type="agent_status",
-                    title=f"{agent.name} paused — {loss_streak} consecutive losses",
-                    message="Trading paused for safety. Review performance and reactivate manually.",
+                    title=f"{agent.name} paused — {loss_streak} losses in a row",
+                    message=f"Will auto-resume in 30 min with re-optimized params. Pause cycle #{agent.pause_cycle_count}.",
                     data={"agent_id": str(agent.id), "trigger": "loss_streak_pause", "streak": loss_streak},
                 )
         elif loss_streak >= max_losses:

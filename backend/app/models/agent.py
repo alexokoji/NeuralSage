@@ -85,5 +85,12 @@ class Agent(Document):
     last_error: Optional[str] = None
     tick_count: int = 0
 
+    # Tracks each time the agent is auto-resumed after a pause so the loss-streak
+    # counter only measures losses that occurred AFTER the most recent resume.
+    # Without this, pre-pause losses accumulate and re-trigger a pause on the
+    # very first loss after resuming, creating an infinite pause-resume loop.
+    last_resumed_at: Optional[datetime] = None
+    pause_cycle_count: int = 0  # how many consecutive pause cycles without a win
+
     class Settings:
         name = "agents"

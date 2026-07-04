@@ -35,32 +35,164 @@ _PAUSE_COOLDOWN_MINUTES = 30  # auto-resume paused agents after this many minute
 async def _auto_resume_paused_agents() -> None:
     """Re-activate agents that have been paused for >= PAUSE_COOLDOWN_MINUTES.
 
-    The pause is a safety brake after 6 consecutive losses.  Once the cooldown
-    elapses the agent resumes in recovery_mode (half position size) rather than
-    requiring a manual click — this keeps trading flowing while still halving
-    risk until a win clears recovery mode.
+    On each resume we:
+      1. Run a fresh fleet study + re-optimization so the agent wakes up with
+         better params rather than the same ones that just lost 6 times.
+      2. Set last_resumed_at so the loss-streak counter starts fresh from 0 —
+         without this, pre-pause losses still count and re-trigger a pause on
+         the very first post-resume loss (infinite loop).
+      3. Scale position size by pause_cycle_count: 1st pause→half, 2nd→quarter,
+         so the account bleeds slower if the market is persistently unfavourable.
     """
     from datetime import datetime, timezone, timedelta
     try:
         paused = await Agent.find({"status": "paused"}).to_list()
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=_PAUSE_COOLDOWN_MINUTES)
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=_PAUSE_COOLDOWN_MINUTES)
         for agent in paused:
-            # Use last_tick_at as a proxy for when the agent was last active;
-            # fall back to updated_at if available.
             last_active = getattr(agent, "last_tick_at", None) or getattr(agent, "updated_at", None)
             if last_active and last_active.tzinfo is None:
                 last_active = last_active.replace(tzinfo=timezone.utc)
             if last_active is None or last_active > cutoff:
                 continue  # paused too recently — wait longer
+
+            # --- Re-optimize before resuming so the agent has fresh params ---
+            try:
+                await _study_and_reoptimize_for_resume(agent)
+            except Exception as exc:
+                logger.warning("agent {} resume re-optimize failed: {}", agent.id, exc)
+
+            # Reset the streak boundary — only losses AFTER this timestamp count.
+            agent.last_resumed_at = now
             agent.status = "active"
             agent.recovery_mode = True  # half-size trades until first win
-            await agent.save()
+
+            cycle = int(getattr(agent, "pause_cycle_count", 0) or 0)
             logger.info(
-                "agent {} auto-resumed after {}min cooldown (recovery_mode=True)",
-                agent.id, _PAUSE_COOLDOWN_MINUTES,
+                "agent {} auto-resumed after {}min cooldown (cycle={} recovery_mode=True last_resumed_at={})",
+                agent.id, _PAUSE_COOLDOWN_MINUTES, cycle, now.isoformat(),
             )
+
+            from app.services.notifications import NotificationService
+            await NotificationService.create(
+                user_id=agent.user_id,
+                type="agent_status",
+                title=f"{agent.name} resumed after cooldown (cycle #{cycle})",
+                message="Re-optimized with fleet data. Trading at reduced size until a win confirms new params.",
+                data={"agent_id": str(agent.id), "trigger": "auto_resume", "cycle": cycle},
+            )
+            await agent.save()
     except Exception as exc:
         logger.warning("auto-resume check failed: {}", exc)
+
+
+async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
+    """Fleet study + Bayesian re-optimization run just before an auto-resume.
+
+    Pulls fleet-wide winning params, fetches fresh candles, and overwrites
+    agent.strategy_params with the best found configuration.  Also adjusts
+    position_size_pct downward on repeated pause cycles so the account
+    bleeds slower when the market is persistently unfavourable.
+    """
+    strategy_type = agent.strategy.type if agent.strategy else None
+    if not strategy_type or not agent.api_key_id:
+        return
+
+    api_key = await ApiKey.get(agent.api_key_id)
+    if not api_key:
+        return
+
+    strat = get_strategy(strategy_type)
+    client = build_client(api_key)
+
+    symbol = (agent.trading_pairs or ["BTCUSDT"])[0]
+    try:
+        candles = await client.get_candles(symbol, agent.timeframe, limit=400)
+    finally:
+        await client.close()
+
+    if len(candles) < 100:
+        return
+
+    df = candles_to_df(candles)
+
+    # Study fleet winners for this strategy
+    warm_starts = await LearningService.warm_starts(
+        strategy_type=strategy_type,
+        symbol=symbol,
+        timeframe=agent.timeframe,
+    )
+    best_fleet = await LearningService.fleet_best(
+        strategy_type=strategy_type, symbol=symbol, limit=5,
+    )
+
+    fleet_winner_params = None
+    for obs in best_fleet:
+        if float(obs.realized_pnl or 0) > 0 and int(obs.realized_trades or 0) >= 2:
+            fleet_winner_params = dict(obs.params)
+            logger.info(
+                "agent {} resume: adopting fleet winner params (pnl={:.2f} trades={})",
+                agent.id, obs.realized_pnl, obs.realized_trades,
+            )
+            break
+
+    base = (
+        {**(strat.default_params or {}), **fleet_winner_params}
+        if fleet_winner_params
+        else {**(strat.default_params or {}), **(agent.strategy_params or {})}
+    )
+
+    result = await optimize_strategy_async(
+        strat, df, base,
+        symbol=symbol,
+        timeframe=agent.timeframe,
+        warm_starts=warm_starts,
+        n_calls=20,  # more iterations than emergency optimize
+    )
+
+    new_params = dict(result.best_params)
+
+    # Safety bounds — same caps as emergency optimize
+    strategy_default_sl = float((strat.default_params or {}).get("stop_loss_pct", 0.5))
+    if "stop_loss_pct" in new_params:
+        new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], strategy_default_sl)
+    if "profit_target_pct" in new_params:
+        strategy_default_tp = float((strat.default_params or {}).get("profit_target_pct", 2.5))
+        new_params["profit_target_pct"] = max(
+            min(new_params["profit_target_pct"], strategy_default_tp * 2), 0.25,
+        )
+    if "min_confidence" in new_params:
+        new_params["min_confidence"] = max(new_params["min_confidence"], 0.65)
+    if "deviation_pct" in new_params:
+        strategy_default_dev = float((strat.default_params or {}).get("deviation_pct", 0.5))
+        new_params["deviation_pct"] = min(new_params["deviation_pct"], strategy_default_dev * 3)
+
+    # Scale position size down on repeated pause cycles to bleed slower.
+    # Cycle 0→1: half (0.5×), Cycle 2+: quarter (0.25×) of strategy default.
+    cycle = int(getattr(agent, "pause_cycle_count", 0) or 0)
+    default_size = float((strat.default_params or {}).get("position_size_pct", 1.5))
+    if cycle >= 2:
+        new_params["position_size_pct"] = round(default_size * 0.25, 3)
+        logger.warning(
+            "agent {} cycle {} — position size quartered to {:.3f}%",
+            agent.id, cycle, new_params["position_size_pct"],
+        )
+    else:
+        new_params["position_size_pct"] = round(default_size * 0.5, 3)
+
+    agent.strategy_params = new_params
+    agent.optimization_params = {
+        "score": result.best_score,
+        "trigger": "resume_study",
+        "pause_cycle": cycle,
+        "adopted_fleet_winner": fleet_winner_params is not None,
+        "iterations": result.iterations,
+    }
+
+    logger.info(
+        "agent {} resume re-optimized: score={:.4f} cycle={} params={}",
+        agent.id, result.best_score, cycle, new_params,
+    )
 
 
 async def run_trading_tick_for_all_agents() -> dict:
