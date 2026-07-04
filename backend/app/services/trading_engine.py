@@ -96,6 +96,18 @@ class TradingEngine:
                 if (agent.max_risk_per_trade or 0) < self._SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT:
                     agent.max_risk_per_trade = float(self._SMALL_ACCOUNT_DEFAULT_MAX_RISK_PCT)
                     applied = True
+                # One-time cleanup: if optimizer raised min_confidence above 0.60,
+                # it will suppress all screener signals before the AI even sees them.
+                # Reset to 0.50 so the AI still gets candidates to evaluate.
+                saved_mc = float((sp.get("min_confidence") or 0))
+                if saved_mc > 0.60:
+                    sp["min_confidence"] = 0.50
+                    agent.strategy_params = sp
+                    applied = True
+                    logger.info(
+                        "agent {} cleaned over-high min_confidence={:.2f}→0.50",
+                        agent.id, saved_mc,
+                    )
                 if applied:
                     logger.info(
                         "agent {} small-account normalization: capital=${:.2f},"
@@ -1602,7 +1614,7 @@ class TradingEngine:
                 0.25,
             )
         if "min_confidence" in new_params:
-            new_params["min_confidence"] = max(new_params["min_confidence"], 0.7)
+            new_params["min_confidence"] = max(new_params["min_confidence"], 0.50)
         if "position_size_pct" in new_params:
             new_params["position_size_pct"] = min(new_params["position_size_pct"], 1.5)
         # Cap deviation_pct so the optimizer can't make the signal impossible to trigger.

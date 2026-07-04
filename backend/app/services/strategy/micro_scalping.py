@@ -80,48 +80,48 @@ class MicroScalpingStrategy(Strategy):
         long_trend_blocked = trend_slope < -trend_slope_threshold
         short_trend_blocked = trend_slope > trend_slope_threshold
 
-        # Extreme dip → fade to long (only if not in a strong downtrend)
+        # Extreme dip → fade to long
         if deviation <= -threshold:
             strength = abs(deviation) / threshold
             conf = min(0.85, 0.55 + strength * 0.15)
             if long_trend_blocked:
-                # Downtrend: reduce confidence sharply — signal may be a continuation not a reversion
-                conf = conf * 0.5
-                meta["trend_filter"] = f"downtrend blocked long (slope={trend_slope:.3f}%)"
-            if conf >= min_conf:
-                reason = (
-                    f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)"
-                    + (f" [trend slope {trend_slope:.3f}%]" if long_trend_blocked else "")
-                )
-                return Signal(
-                    "enter_long",
-                    conf,
-                    reason,
-                    suggested_stop_loss_pct=params["stop_loss_pct"],
-                    suggested_take_profit_pct=params["profit_target_pct"],
-                    metadata=meta,
-                )
+                # Downtrend: penalise confidence but still emit the signal so the
+                # AI layer can evaluate whether the dip is deep enough to trade.
+                # Never drop below 0.30 so it still appears as a candidate for Groq.
+                conf = max(conf * 0.5, 0.30)
+                meta["trend_filter"] = f"downtrend caution (slope={trend_slope:.3f}%)"
+            reason = (
+                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)"
+                + (f" [trend caution slope={trend_slope:.3f}%]" if long_trend_blocked else "")
+            )
+            return Signal(
+                "enter_long",
+                conf,
+                reason,
+                suggested_stop_loss_pct=params["stop_loss_pct"],
+                suggested_take_profit_pct=params["profit_target_pct"],
+                metadata=meta,
+            )
 
-        # Extreme spike → fade to short (only if not in a strong uptrend)
+        # Extreme spike → fade to short
         if deviation >= threshold:
             strength = abs(deviation) / threshold
             conf = min(0.85, 0.55 + strength * 0.15)
             if short_trend_blocked:
-                conf = conf * 0.5
-                meta["trend_filter"] = f"uptrend blocked short (slope={trend_slope:.3f}%)"
-            if conf >= min_conf:
-                reason = (
-                    f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)"
-                    + (f" [trend slope {trend_slope:.3f}%]" if short_trend_blocked else "")
-                )
-                return Signal(
-                    "enter_short",
-                    conf,
-                    reason,
-                    suggested_stop_loss_pct=params["stop_loss_pct"],
-                    suggested_take_profit_pct=params["profit_target_pct"],
-                    metadata=meta,
-                )
+                conf = max(conf * 0.5, 0.30)
+                meta["trend_filter"] = f"uptrend caution (slope={trend_slope:.3f}%)"
+            reason = (
+                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)"
+                + (f" [trend caution slope={trend_slope:.3f}%]" if short_trend_blocked else "")
+            )
+            return Signal(
+                "enter_short",
+                conf,
+                reason,
+                suggested_stop_loss_pct=params["stop_loss_pct"],
+                suggested_take_profit_pct=params["profit_target_pct"],
+                metadata=meta,
+            )
 
         proximity = abs(deviation) / max(threshold, 0.01)
         hold_conf = min(0.50, 0.35 + proximity * 0.15)

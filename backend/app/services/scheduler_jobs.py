@@ -196,7 +196,9 @@ async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
             min(new_params["profit_target_pct"], strategy_default_tp * 2), 0.25,
         )
     if "min_confidence" in new_params:
-        new_params["min_confidence"] = max(new_params["min_confidence"], 0.65)
+        # Floor at 0.50 — higher kills too many valid signals on a small pair set.
+        # The trend filter and AI gate already protect against low-quality entries.
+        new_params["min_confidence"] = max(new_params["min_confidence"], 0.50)
     if "deviation_pct" in new_params:
         strategy_default_dev = float((strat.default_params or {}).get("deviation_pct", 0.5))
         new_params["deviation_pct"] = min(new_params["deviation_pct"], strategy_default_dev * 3)
