@@ -348,6 +348,13 @@ class TradingEngine:
                 (agent.strategy_params or {}).get("screener_advantage_delta", 0.10)
             )
             for symbol, df, screener_signal, open_position in candidates[:1]:
+                logger.info(
+                    "agent {} screener best: {} {} conf={:.2f} regime={} reversal_pending={}",
+                    agent.id, symbol, screener_signal.action,
+                    screener_signal.confidence,
+                    (screener_signal.metadata or {}).get("market_regime", "?"),
+                    (screener_signal.metadata or {}).get("reversal_pending", False),
+                )
                 try:
                     groq_signal = await grok_analyst.groq_analyse(
                         screener_signal, df,
