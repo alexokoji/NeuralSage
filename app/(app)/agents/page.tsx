@@ -16,6 +16,9 @@ import {
   Activity,
   Lightbulb,
   Loader2,
+  ChevronDown,
+  ChevronUp,
+  Brain,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,7 +40,7 @@ import { Slider } from '@/components/ui/slider';
 import { usePolling, useApiKeys, useStrategies } from '@/lib/api/hooks';
 import { api } from '@/lib/api/client';
 import { Switch } from '@/components/ui/switch';
-import type { Agent, Timeframe } from '@/lib/api/types';
+import type { Agent, AIDecisionEntry, Timeframe } from '@/lib/api/types';
 
 const statusConfig = {
   active: {
@@ -89,6 +92,92 @@ const signalColors: Record<string, string> = {
   hold: 'text-muted-foreground',
 };
 
+const actionBadge = (action: string) => {
+  if (action === 'enter_long') return 'bg-green-500/15 text-green-400 border-green-500/20';
+  if (action === 'enter_short') return 'bg-red-500/15 text-red-400 border-red-500/20';
+  if (action === 'exit') return 'bg-orange-500/15 text-orange-400 border-orange-500/20';
+  if (action === 'groq_hold') return 'bg-zinc-500/15 text-zinc-400 border-zinc-500/20';
+  return 'bg-zinc-500/10 text-muted-foreground border-border';
+};
+
+const gptBadge = (decision: string) => {
+  if (decision === 'approve') return 'bg-green-500/15 text-green-400';
+  if (decision === 'reject') return 'bg-red-500/15 text-red-400';
+  return 'bg-zinc-500/10 text-muted-foreground';
+};
+
+function AIDecisionRow({ entry }: { entry: AIDecisionEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const ts = new Date(entry.ts);
+  const timeStr = ts.toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Africa/Lagos' });
+
+  return (
+    <div className="px-3 py-2 text-[10px] space-y-1.5">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-mono text-muted-foreground shrink-0">{timeStr}</span>
+          <span className="font-semibold text-foreground shrink-0">{entry.symbol}</span>
+          <span className={cn('border rounded px-1 py-0.5 font-mono text-[9px] shrink-0', actionBadge(entry.final))}>
+            {entry.final.replace(/_/g, ' ').toUpperCase()}
+          </span>
+          {entry.trade_placed && (
+            <span className="bg-purple-500/20 text-purple-300 border border-purple-500/20 rounded px-1 py-0.5 text-[9px]">TRADED</span>
+          )}
+        </div>
+        <button onClick={() => setExpanded(v => !v)} className="shrink-0 text-muted-foreground hover:text-foreground">
+          {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        </button>
+      </div>
+
+      {/* Groq summary (always visible) */}
+      {entry.groq && (
+        <div className="flex items-start gap-1.5">
+          <span className="shrink-0 text-purple-400 font-semibold w-8">Groq</span>
+          <span className="text-muted-foreground leading-relaxed">{entry.groq.reason}</span>
+        </div>
+      )}
+
+      {/* GPT summary (always visible when present) */}
+      {entry.gpt && (
+        <div className="flex items-start gap-1.5">
+          <span className="shrink-0 text-blue-400 font-semibold w-8">GPT</span>
+          <span className={cn('shrink-0 rounded px-1 py-0.5 text-[9px] font-medium', gptBadge(entry.gpt.decision))}>
+            {entry.gpt.decision.toUpperCase()}
+          </span>
+          <span className="text-muted-foreground leading-relaxed">{entry.gpt.reason}</span>
+        </div>
+      )}
+
+      {/* Expanded: screener details */}
+      {expanded && (
+        <div className="mt-1 pt-1.5 border-t border-border space-y-1 text-[9px]">
+          <div className="flex items-start gap-1.5">
+            <span className="shrink-0 text-zinc-500 font-semibold w-14">Screener</span>
+            <span className="text-zinc-500">{entry.screener.action} conf={entry.screener.confidence} regime={entry.screener.regime}</span>
+          </div>
+          <div className="text-zinc-600 pl-16 leading-relaxed">{entry.screener.reason}</div>
+          {entry.screener.reversal_pending && (
+            <div className="pl-16 text-amber-500/70">Waiting for reversal candle</div>
+          )}
+          {entry.groq && (
+            <div className="flex items-center gap-1.5">
+              <span className="shrink-0 text-zinc-500 font-semibold w-14">Groq conf</span>
+              <span className="text-zinc-500">{entry.groq.confidence}</span>
+            </div>
+          )}
+          {entry.gpt && (
+            <div className="flex items-center gap-1.5">
+              <span className="shrink-0 text-zinc-500 font-semibold w-14">GPT conf</span>
+              <span className="text-zinc-500">{entry.gpt.confidence}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentCard({
   agent,
   onAction,
@@ -113,6 +202,7 @@ function AgentCard({
   } | null>(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showAIFeed, setShowAIFeed] = useState(false);
 
   const fetchSuggestions = useCallback(async () => {
     setLoadingSuggestions(true);
@@ -328,6 +418,30 @@ function AgentCard({
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* AI Activity Feed — Groq + GPT reasoning per tick */}
+      {(agent.ai_decision_log ?? []).length > 0 && (
+        <div className="bg-accent/20 border border-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowAIFeed(v => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <Brain className="w-3 h-3 text-purple-400" />
+              AI Reasoning Feed
+              <span className="bg-purple-500/20 text-purple-400 rounded px-1">{(agent.ai_decision_log ?? []).length}</span>
+            </span>
+            {showAIFeed ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          {showAIFeed && (
+            <div className="border-t border-border divide-y divide-border max-h-80 overflow-y-auto">
+              {(agent.ai_decision_log ?? []).slice(0, 10).map((entry, i) => (
+                <AIDecisionRow key={i} entry={entry} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

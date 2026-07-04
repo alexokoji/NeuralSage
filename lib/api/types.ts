@@ -121,6 +121,31 @@ export interface Agent {
     computed_at?: string;
   };
   last_coach_review_at?: string | null;
+  ai_decision_log?: AIDecisionEntry[];
+}
+
+export interface AIDecisionEntry {
+  ts: string;
+  symbol: string;
+  screener: {
+    action: string;
+    confidence: number;
+    reason: string;
+    regime: string;
+    reversal_pending: boolean;
+  };
+  groq: {
+    action: string;
+    confidence: number;
+    reason: string;
+  } | null;
+  gpt: {
+    decision: string;
+    confidence: number;
+    reason: string;
+  } | null;
+  final: string;
+  trade_placed: boolean;
 }
 
 export interface AgentCreate {

@@ -344,6 +344,7 @@ class TradingEngine:
             # the AI's confidence by a small margin (configurable per-agent).
             # groq_best stores: (symbol, df, screener_signal, groq_signal, open_pos)
             groq_best = None  # (symbol, df, screener_signal, groq_signal, open_pos)
+            decision_entry: dict | None = None  # captured for ai_decision_log
             screener_advantage_delta = float(
                 (agent.strategy_params or {}).get("screener_advantage_delta", 0.10)
             )
@@ -355,6 +356,21 @@ class TradingEngine:
                     (screener_signal.metadata or {}).get("market_regime", "?"),
                     (screener_signal.metadata or {}).get("reversal_pending", False),
                 )
+                decision_entry = {
+                    "ts": now.isoformat(),
+                    "symbol": symbol,
+                    "screener": {
+                        "action": screener_signal.action,
+                        "confidence": round(screener_signal.confidence, 3),
+                        "reason": screener_signal.reason,
+                        "regime": (screener_signal.metadata or {}).get("market_regime", "?"),
+                        "reversal_pending": bool((screener_signal.metadata or {}).get("reversal_pending", False)),
+                    },
+                    "groq": None,
+                    "gpt": None,
+                    "final": "hold",
+                    "trade_placed": False,
+                }
                 try:
                     groq_signal = await grok_analyst.groq_analyse(
                         screener_signal, df,
@@ -370,11 +386,20 @@ class TradingEngine:
                         },
                     )
                     ai_used = True
+                    decision_entry["groq"] = {
+                        "action": groq_signal.action,
+                        "confidence": round(groq_signal.confidence, 3),
+                        "reason": groq_signal.reason,
+                    }
                     if groq_signal.action in ("enter_long", "enter_short", "exit"):
                         if groq_best is None or groq_signal.confidence > (groq_best[3].confidence if groq_best[3] else 0):
                             groq_best = (symbol, df, screener_signal, groq_signal, open_position)
+                    else:
+                        decision_entry["final"] = "groq_hold"
                 except Exception as exc:
                     logger.debug("agent {} {} Groq analysis failed: {}", agent.id, symbol, exc)
+                    if decision_entry:
+                        decision_entry["groq"] = {"action": "error", "confidence": 0, "reason": str(exc)}
 
             # Phase 3: GPT final decision on Groq's best pick
             if groq_best:
@@ -387,6 +412,14 @@ class TradingEngine:
                         agent_name=agent.name,
                         learning_context=learning_context,
                     )
+                    gpt_verdict = (final_signal.metadata or {}).get("gpt_decision", "approve")
+                    if decision_entry:
+                        decision_entry["gpt"] = {
+                            "decision": gpt_verdict,
+                            "confidence": round(final_signal.confidence, 3),
+                            "reason": final_signal.reason,
+                        }
+                        decision_entry["final"] = final_signal.action
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
@@ -401,8 +434,13 @@ class TradingEngine:
                     )
                     if final_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{final_signal.action}")
+                        if decision_entry:
+                            decision_entry["trade_placed"] = True
                 except Exception as exc:
                     logger.warning("agent {} GPT decision failed: {} — using Groq signal", agent.id, exc)
+                    if decision_entry:
+                        decision_entry["gpt"] = {"decision": "error", "confidence": 0, "reason": str(exc)}
+                        decision_entry["final"] = groq_signal.action
                     agent.last_signal = groq_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
@@ -417,6 +455,8 @@ class TradingEngine:
                     )
                     if groq_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{groq_signal.action}")
+                        if decision_entry:
+                            decision_entry["trade_placed"] = True
             elif candidates:
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
@@ -466,6 +506,12 @@ class TradingEngine:
             agent.last_signal = "hold"
             agent.last_signal_symbol = f"scanned {pairs_checked} pairs"
             agent.last_error = None
+
+        # Append AI decision entry to the live log (newest first, keep last 20).
+        if decision_entry:
+            log = list(agent.ai_decision_log or [])
+            log.insert(0, decision_entry)
+            agent.ai_decision_log = log[:20]
 
         # Stuck agent nudge: every 200 ticks (~3h at 60s interval) if no trades
         tick_count = agent.tick_count or 0
