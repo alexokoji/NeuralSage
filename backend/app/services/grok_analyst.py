@@ -485,6 +485,7 @@ async def suggest_params(
     timeframe: str,
     search_space: dict[str, tuple[float, float]],
     existing_warm_starts: list[dict[str, Any]],
+    loss_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Ask Grok to propose a parameter set for seeding the Bayesian optimizer.
 
@@ -500,19 +501,31 @@ async def suggest_params(
     space_text = json.dumps({k: {"min": v[0], "max": v[1]} for k, v in search_space.items()}, indent=2)
     warm_text = json.dumps(existing_warm_starts[:3], indent=2) if existing_warm_starts else "none"
 
+    loss_section = ""
+    if loss_context:
+        loss_section = f"""
+Recent losing trades to learn from (DO NOT suggest params that would repeat these):
+{json.dumps(loss_context, indent=2)}
+
+Analyse WHY these trades lost (market regime? wrong direction? too tight SL? too wide deviation
+threshold letting in weak signals?) and use that diagnosis to pick params that would AVOID
+repeating the same mistakes.
+"""
+
     prompt = f"""Strategy: {strategy_type}  Symbol: {symbol}  Timeframe: {timeframe}
 
 {candle_text}
 Indicators: {indicator_text}
-
+{loss_section}
 Parameter search space:
 {space_text}
 
 Top existing warm-start params (from fleet learning):
 {warm_text}
 
-Task: Given the market regime visible in the candles, suggest ONE concrete parameter set
-that you believe will perform well. Values MUST fall within the min/max bounds above.
+Task: Given the market regime visible in the candles and the losing trade history above,
+suggest ONE concrete parameter set that you believe will perform well.
+Values MUST fall within the min/max bounds above.
 Return ONLY a JSON object: {{ "param_name": value, ... }}
 """
     try:

@@ -87,12 +87,16 @@ async def _auto_resume_paused_agents() -> None:
 
 
 async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
-    """Fleet study + Bayesian re-optimization run just before an auto-resume.
+    """Fleet study + loss-aware Bayesian re-optimization before auto-resume.
 
-    Pulls fleet-wide winning params, fetches fresh candles, and overwrites
-    agent.strategy_params with the best found configuration.  Also adjusts
-    position_size_pct downward on repeated pause cycles so the account
-    bleeds slower when the market is persistently unfavourable.
+    Three stages:
+      1. Collect recent losing trades and summarise WHY they lost.
+      2. Run Bayesian optimizer with that loss context fed into the Grok
+         prompt so the AI can reason "these longs all failed in a downtrend,
+         try higher min_confidence / tighter SL."
+      3. Backtest gate: if the best params still lose on recent candles,
+         raise ValueError so the caller extends the cooldown rather than
+         waking the agent up with params that are already known to fail.
     """
     strategy_type = agent.strategy.type if agent.strategy else None
     if not strategy_type or not agent.api_key_id:
@@ -116,7 +120,36 @@ async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
 
     df = candles_to_df(candles)
 
-    # Study fleet winners for this strategy
+    # ── 1. Collect recent losing trades as learning context ───────────────
+    recent_losses = await Trade.find(
+        Trade.agent_id == agent.id,
+        Trade.status == "filled",
+        {"pnl": {"$lt": 0}},
+    ).sort(-Trade.closed_at).limit(10).to_list()
+
+    loss_context = [
+        {
+            "symbol": t.symbol,
+            "side": t.side,
+            "entry_price": float(t.entry_price or 0),
+            "exit_price": float(t.exit_price or 0),
+            "pnl": float(t.pnl or 0),
+            "pnl_pct": float(t.pnl_pct or 0),
+            "signal_reason": (t.signal_data or {}).get("reason", ""),
+            "confidence": (t.signal_data or {}).get("confidence", ""),
+            "deviation_pct": (t.signal_data or {}).get("deviation_pct", ""),
+            "opened_at": t.opened_at.isoformat() if t.opened_at else "",
+            "closed_at": t.closed_at.isoformat() if t.closed_at else "",
+        }
+        for t in recent_losses
+    ] if recent_losses else None
+
+    logger.info(
+        "agent {} resume study: {} recent losses to feed optimizer",
+        agent.id, len(recent_losses),
+    )
+
+    # ── 2. Fleet warm-starts ──────────────────────────────────────────────
     warm_starts = await LearningService.warm_starts(
         strategy_type=strategy_type,
         symbol=symbol,
@@ -147,12 +180,13 @@ async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
         symbol=symbol,
         timeframe=agent.timeframe,
         warm_starts=warm_starts,
-        n_calls=20,  # more iterations than emergency optimize
+        n_calls=20,
+        loss_context=loss_context,
     )
 
     new_params = dict(result.best_params)
 
-    # Safety bounds — same caps as emergency optimize
+    # Safety bounds
     strategy_default_sl = float((strat.default_params or {}).get("stop_loss_pct", 0.5))
     if "stop_loss_pct" in new_params:
         new_params["stop_loss_pct"] = min(new_params["stop_loss_pct"], strategy_default_sl)
@@ -167,31 +201,53 @@ async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
         strategy_default_dev = float((strat.default_params or {}).get("deviation_pct", 0.5))
         new_params["deviation_pct"] = min(new_params["deviation_pct"], strategy_default_dev * 3)
 
-    # Scale position size down on repeated pause cycles to bleed slower.
-    # Cycle 0→1: half (0.5×), Cycle 2+: quarter (0.25×) of strategy default.
     cycle = int(getattr(agent, "pause_cycle_count", 0) or 0)
     default_size = float((strat.default_params or {}).get("position_size_pct", 1.5))
     if cycle >= 2:
         new_params["position_size_pct"] = round(default_size * 0.25, 3)
-        logger.warning(
-            "agent {} cycle {} — position size quartered to {:.3f}%",
-            agent.id, cycle, new_params["position_size_pct"],
-        )
+        logger.warning("agent {} cycle {} — position size quartered to {:.3f}%",
+                       agent.id, cycle, new_params["position_size_pct"])
     else:
         new_params["position_size_pct"] = round(default_size * 0.5, 3)
+
+    # ── 3. Backtest gate — don't resume if params still lose on recent data ─
+    from app.services.backtester import backtest as run_backtest
+    backtest_check = run_backtest(strat, df, new_params)
+    if backtest_check.score <= 0:
+        # Market conditions are unfavourable for this strategy right now.
+        # Update last_tick_at so the cooldown timer resets and we try again
+        # in another _PAUSE_COOLDOWN_MINUTES minutes.
+        from datetime import datetime, timezone
+        agent.last_tick_at = datetime.now(timezone.utc)
+        await agent.save()
+        logger.warning(
+            "agent {} backtest gate FAILED (score={:.4f} trades={} win_rate={:.0%})"
+            " — extending cooldown, not resuming yet",
+            agent.id, backtest_check.score, backtest_check.trades, backtest_check.win_rate,
+        )
+        raise ValueError(
+            f"backtest gate: optimized params score {backtest_check.score:.4f} ≤ 0 "
+            f"on recent {len(df)} candles — market conditions unfavourable for {strategy_type}"
+        )
 
     agent.strategy_params = new_params
     agent.optimization_params = {
         "score": result.best_score,
+        "backtest_score": backtest_check.score,
+        "backtest_trades": backtest_check.trades,
+        "backtest_win_rate": round(backtest_check.win_rate, 3),
         "trigger": "resume_study",
         "pause_cycle": cycle,
         "adopted_fleet_winner": fleet_winner_params is not None,
         "iterations": result.iterations,
+        "loss_trades_analysed": len(recent_losses),
     }
 
     logger.info(
-        "agent {} resume re-optimized: score={:.4f} cycle={} params={}",
-        agent.id, result.best_score, cycle, new_params,
+        "agent {} resume re-optimized: optimizer_score={:.4f} backtest_score={:.4f}"
+        " cycle={} losses_analysed={} params={}",
+        agent.id, result.best_score, backtest_check.score,
+        cycle, len(recent_losses), new_params,
     )
 
 

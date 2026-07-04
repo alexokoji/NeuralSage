@@ -74,6 +74,7 @@ async def optimize_strategy_async(
     warm_starts: list[dict[str, Any]] | None = None,
     n_calls: int = 25,
     random_state: int = 42,
+    loss_context: list[dict[str, Any]] | None = None,
 ) -> OptimizationResult:
     """Async wrapper: fetches Grok param suggestion then calls the sync optimizer."""
     space_def = SEARCH_SPACES.get(strategy.type)
@@ -87,6 +88,7 @@ async def optimize_strategy_async(
             timeframe=timeframe,
             search_space=space_def,
             existing_warm_starts=enhanced_warm_starts,
+            loss_context=loss_context,
         )
         if grok_params:
             enhanced_warm_starts.insert(0, grok_params)  # Grok's suggestion goes first
