@@ -411,36 +411,36 @@ class TradingEngine:
                     if groq_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{groq_signal.action}")
             elif candidates:
-                # AI unavailable — skip new entries entirely.
-                # An unvalidated entry based on EMA deviation alone loses more than it wins
-                # because the screener has no view of market structure, volume, or momentum.
-                # Exits are still allowed so we can close positions already open.
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
-                if screener_signal.action == "exit" and open_position is not None:
-                    logger.info("agent {} AI unavailable — allowing exit-only signal for {} (conf {:.2f})",
-                                agent.id, symbol, screener_signal.action)
+                if ai_used:
+                    # Groq ran but returned hold — nothing to trade this tick.
+                    logger.debug(
+                        "agent {} Groq returned hold for {} — no entry this tick",
+                        agent.id, symbol,
+                    )
+                elif screener_signal.action == "exit" and open_position is not None:
+                    # AI was completely unavailable but we have an open position that
+                    # wants to exit — allow the exit to protect capital.
+                    logger.info("agent {} AI offline — allowing exit-only signal for {} (conf {:.2f})",
+                                agent.id, symbol, screener_signal.confidence)
                     agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = f"{symbol} (no AI)"
                     try:
                         await self._execute_signal(
-                            agent,
-                            api_key,
-                            client,
-                            symbol,
-                            df,
-                            screener_signal,
-                            open_position,
-                            ai_available=False,
+                            agent, api_key, client, symbol, df,
+                            screener_signal, open_position, ai_available=False,
                         )
                     except Exception as exc:
                         logger.error("agent {} _execute_signal for {} raised exception: {}", agent.id, symbol, exc, exc_info=True)
                     if screener_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
                 else:
+                    # AI completely offline — block all new entries.
+                    # Unvalidated EMA-deviation signals lose more than they win.
                     logger.info(
-                        "agent {} AI unavailable — skipping {} {} (no unvalidated entries)",
-                        agent.id, symbol, screener_signal.action,
+                        "agent {} AI offline — holding {} (no unvalidated entries allowed)",
+                        agent.id, symbol,
                     )
 
         finally:
