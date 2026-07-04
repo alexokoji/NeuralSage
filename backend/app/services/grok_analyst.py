@@ -704,9 +704,12 @@ async def coach_review(
     The coach nudges params proactively (before the agent needs to pause)
     based on patterns like: losing in trending regimes, tight SL causing
     too many stops, low win rate, high drawdown.
+
+    Uses GPT as the primary diagnostician (more reliable reasoning over
+    structured data); falls back to Groq if GPT is unavailable.
     """
     try:
-        client = GrokClient()
+        client, is_gpt = _get_premium_client()
     except GrokUnavailableError:
         return None
 
@@ -766,9 +769,11 @@ Values MUST be within the search space bounds above.
             system=_PARAM_SYSTEM,
             mini=True,
         )
+        provider = "GPT" if is_gpt else "Groq"
         if result.get("no_change"):
-            logger.debug("coach review: no change needed — {}", result.get("reason", ""))
+            logger.debug("coach review ({}): no change needed — {}", provider, result.get("reason", ""))
             return None
+        logger.info("coach review ({}) suggested nudge: {}", provider, {k: v for k, v in result.items() if k in search_space})
         validated: dict[str, Any] = {}
         for k, (lo, hi) in search_space.items():
             if k in result:
@@ -778,7 +783,7 @@ Values MUST be within the search space bounds above.
                 except (TypeError, ValueError):
                     pass
         return validated if validated else None
-    except GrokError as exc:
+    except (GrokError, GPTError) as exc:
         logger.warning("coach review failed: {}", exc)
         return None
 
