@@ -287,6 +287,50 @@ function AgentCard({
         <span className="font-mono">{agent.session_trade_count ?? 0}</span>
       </div>
 
+      {/* Coach performance snapshot — shown once the coach agent has reviewed */}
+      {(agent.performance_snapshot?.total_trades ?? 0) > 0 && (
+        <div className="bg-accent/30 border border-border rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Coach Review</span>
+            {agent.last_coach_review_at && (
+              <span className="text-[9px] text-muted-foreground">{formatWAT(agent.last_coach_review_at)}</span>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              {
+                label: 'Win Rate',
+                value: `${agent.performance_snapshot?.win_rate?.toFixed(0) ?? 0}%`,
+                color: (agent.performance_snapshot?.win_rate ?? 0) >= 45 ? 'text-profit' : 'text-loss',
+              },
+              {
+                label: 'Profit Factor',
+                value: (agent.performance_snapshot?.profit_factor ?? 0).toFixed(2),
+                color: (agent.performance_snapshot?.profit_factor ?? 0) >= 1.0 ? 'text-profit' : 'text-loss',
+              },
+              {
+                label: 'Drawdown',
+                value: `$${(agent.performance_snapshot?.max_drawdown_usdt ?? 0).toFixed(3)}`,
+                color: 'text-muted-foreground',
+              },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="text-center">
+                <p className={`text-xs font-bold font-mono ${color}`}>{value}</p>
+                <p className="text-[9px] text-muted-foreground">{label}</p>
+              </div>
+            ))}
+          </div>
+          {Object.entries(agent.performance_snapshot?.by_regime ?? {}).map(([regime, stats]) => (
+            <div key={regime} className="flex items-center justify-between text-[9px]">
+              <span className="text-muted-foreground capitalize">{regime.replace('_', ' ')}</span>
+              <span className={stats.win_rate >= 45 ? 'text-profit font-mono' : 'text-loss font-mono'}>
+                {stats.win_rate}% · {stats.total}t · {stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(3)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Live activity row */}
       <div className="border-t border-border pt-3 space-y-1.5">
         <div className="flex items-center justify-between text-[10px]">

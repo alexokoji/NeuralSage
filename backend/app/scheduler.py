@@ -19,6 +19,7 @@ from app.config import settings
 from app.services.scheduler_jobs import (
     check_missed_rollover,
     reconcile_exchange_positions,
+    run_coach_review,
     run_daily_rollover,
     run_optimization_sweep,
     run_trading_tick_for_all_agents,
@@ -83,6 +84,15 @@ def start() -> None:
         replace_existing=True,
     )
 
+    sched.add_job(
+        run_coach_review,
+        CronTrigger(hour="*/2", minute=30),
+        id="coach_review",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+
     # Check if daily rollover was missed (e.g. Render restart after midnight)
     sched.add_job(
         check_missed_rollover,
@@ -93,7 +103,7 @@ def start() -> None:
 
     sched.start()
     logger.info(
-        "in-process scheduler started: trade_tick={}s, optimization=every {}h, rollover=daily 00:01 UTC, keep_alive=10m",
+        "in-process scheduler started: trade_tick={}s, optimization=every {}h, coach=every 2h, rollover=daily 00:01 UTC, keep_alive=10m",
         settings.TRADE_LOOP_INTERVAL_SECONDS,
         settings.OPTIMIZATION_INTERVAL_HOURS,
     )

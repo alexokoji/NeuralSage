@@ -36,6 +36,11 @@ class Trade(Document):
     risk_checks: dict[str, Any] = Field(default_factory=dict)
     notes: str = ""
 
+    # Market condition at entry: "trending_up" | "trending_down" | "ranging" | None
+    # Derived from the strategy's trend filter or the AI's market_structure tag.
+    # Stored here (not buried in signal_data) so the coach agent can query by regime.
+    market_regime: Optional[str] = None
+
     opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: Optional[datetime] = None
     created_at: Annotated[datetime, Indexed()] = Field(default_factory=lambda: datetime.now(timezone.utc))

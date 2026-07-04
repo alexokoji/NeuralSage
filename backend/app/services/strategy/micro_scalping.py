@@ -57,11 +57,19 @@ class MicroScalpingStrategy(Strategy):
         trend_ema = ema(close, trend_period)
         trend_slope = (float(trend_ema.iloc[-1]) - float(trend_ema.iloc[-trend_period])) / float(trend_ema.iloc[-trend_period]) * 100
 
+        if trend_slope > trend_slope_threshold:
+            market_regime = "trending_up"
+        elif trend_slope < -trend_slope_threshold:
+            market_regime = "trending_down"
+        else:
+            market_regime = "ranging"
+
         meta = {
             "ema": last_ema,
             "last_close": last_close,
             "deviation_pct": deviation,
             "trend_slope_pct": round(trend_slope, 4),
+            "market_regime": market_regime,
         }
 
         if ctx.in_position:

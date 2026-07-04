@@ -92,5 +92,10 @@ class Agent(Document):
     last_resumed_at: Optional[datetime] = None
     pause_cycle_count: int = 0  # how many consecutive pause cycles without a win
 
+    # Coach agent: updated every 2 hours with latest performance metrics.
+    # Stored here so the UI and coach can read without re-querying all trades.
+    performance_snapshot: dict[str, Any] = Field(default_factory=dict)
+    last_coach_review_at: Optional[datetime] = None
+
     class Settings:
         name = "agents"

@@ -814,3 +814,133 @@ async def run_daily_rollover() -> dict:
 
     logger.info("daily rollover complete: snapshots={}", snapshots)
     return {"snapshots": snapshots, "at": datetime.now(timezone.utc).isoformat()}
+
+
+# --------------------------------------------------------------------------- #
+# Coach agent — runs every 2 hours
+# --------------------------------------------------------------------------- #
+
+_COACH_MIN_TRADES = 5          # don't review unless the agent has at least this many closed trades
+_COACH_REVIEW_LOOKBACK = 30    # number of recent closed trades to analyse
+
+
+async def run_coach_review() -> dict:
+    """Periodic performance review for all active agents.
+
+    For each agent that has >= _COACH_MIN_TRADES closed trades since the last
+    review (or ever, for the first run):
+      1. Compute win rate, profit factor, drawdown, and regime breakdown.
+      2. Save the metrics as agent.performance_snapshot so the UI can display them.
+      3. If the metrics look poor (profit_factor < 1.2 or win_rate < 40%),
+         ask the Coach AI to suggest a targeted parameter nudge.
+      4. Apply any nudge directly — no pause/resume needed.
+
+    This runs in addition to the pause-triggered re-optimization, giving the
+    agent a chance to course-correct before it reaches 6 consecutive losses.
+    """
+    from app.services.ai_optimizer import SEARCH_SPACES
+    from app.services.performance import compute_metrics
+
+    now = datetime.now(timezone.utc)
+    reviewed = 0
+    nudged = 0
+
+    agents = await Agent.find({"status": {"$in": ["active", "paused"]}}).to_list()
+    for agent in agents:
+        try:
+            strategy_type = (agent.strategy.type if agent.strategy else None)
+            if not strategy_type:
+                continue
+
+            # Build the time filter: only trades since the last coach review
+            query_filters: list = [
+                Trade.agent_id == agent.id,
+                Trade.status == "filled",
+            ]
+            last_review = getattr(agent, "last_coach_review_at", None)
+            if last_review:
+                if last_review.tzinfo is None:
+                    last_review = last_review.replace(tzinfo=timezone.utc)
+                query_filters.append(Trade.closed_at >= last_review)
+
+            recent_trades = (
+                await Trade.find(*query_filters)
+                .sort(-Trade.closed_at)
+                .limit(_COACH_REVIEW_LOOKBACK)
+                .to_list()
+            )
+
+            if len(recent_trades) < _COACH_MIN_TRADES:
+                continue
+
+            metrics = compute_metrics(recent_trades)
+            agent.performance_snapshot = {**metrics, "computed_at": now.isoformat()}
+            agent.last_coach_review_at = now
+            reviewed += 1
+
+            logger.info(
+                "coach review agent {} strategy={} trades={} win_rate={:.1f}% pf={:.3f} max_dd={:.4f}",
+                agent.id, strategy_type,
+                metrics["total_trades"], metrics["win_rate"],
+                metrics["profit_factor"], metrics["max_drawdown_usdt"],
+            )
+
+            # Log regime breakdown
+            for regime, stats in (metrics.get("by_regime") or {}).items():
+                logger.info(
+                    "  regime={} trades={} win_rate={:.1f}% pnl={:+.4f}",
+                    regime, stats["total"], stats["win_rate"], stats["pnl"],
+                )
+
+            # Only nudge if performance is poor
+            profit_factor = metrics["profit_factor"]
+            win_rate = metrics["win_rate"]
+            needs_nudge = profit_factor < 1.2 or win_rate < 40.0
+
+            if needs_nudge and strategy_type in SEARCH_SPACES:
+                search_space = SEARCH_SPACES[strategy_type]
+                strat = get_strategy(strategy_type)
+                current_params = strat.merge_params(agent.strategy_params or {})
+
+                trades_for_ai = [
+                    {
+                        "symbol": t.symbol,
+                        "side": t.side,
+                        "pnl": round(t.pnl, 4),
+                        "pnl_pct": round(t.pnl_pct, 4),
+                        "market_regime": t.market_regime,
+                        "confidence": (t.signal_data or {}).get("confidence"),
+                        "reason": (t.signal_data or {}).get("reason", "")[:80],
+                    }
+                    for t in recent_trades[:10]
+                ]
+
+                nudge = await grok_analyst.coach_review(
+                    metrics,
+                    trades_for_ai,
+                    strategy_type=strategy_type,
+                    current_params=current_params,
+                    search_space=search_space,
+                )
+
+                if nudge:
+                    merged = {**(agent.strategy_params or {}), **nudge}
+                    agent.strategy_params = merged
+                    nudged += 1
+                    logger.info(
+                        "coach nudge agent {} pf={:.3f} win_rate={:.1f}% → applying: {}",
+                        agent.id, profit_factor, win_rate, nudge,
+                    )
+                else:
+                    logger.info(
+                        "coach review agent {} — poor metrics but AI suggested no change",
+                        agent.id,
+                    )
+
+            await agent.save()
+
+        except Exception as exc:
+            logger.warning("coach review failed for agent {}: {}", agent.id, exc)
+
+    logger.info("coach review complete: reviewed={} nudged={}", reviewed, nudged)
+    return {"reviewed": reviewed, "nudged": nudged, "at": now.isoformat()}

@@ -109,6 +109,18 @@ export interface Agent {
   protect_mode?: boolean;
   profit_protect_pct?: number;
   recovery_mode?: boolean;
+  performance_snapshot?: {
+    total_trades?: number;
+    win_rate?: number;
+    profit_factor?: number;
+    avg_pnl?: number;
+    max_drawdown_usdt?: number;
+    gross_profit?: number;
+    gross_loss?: number;
+    by_regime?: Record<string, { total: number; wins: number; win_rate: number; pnl: number }>;
+    computed_at?: string;
+  };
+  last_coach_review_at?: string | null;
 }
 
 export interface AgentCreate {

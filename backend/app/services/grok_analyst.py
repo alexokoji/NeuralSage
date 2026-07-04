@@ -688,6 +688,101 @@ async def chat(
         return "I'm having trouble reaching the AI service right now. Please try again shortly."
 
 
+async def coach_review(
+    metrics: dict[str, Any],
+    recent_trades: list[dict[str, Any]],
+    *,
+    strategy_type: str,
+    current_params: dict[str, Any],
+    search_space: dict[str, tuple[float, float]],
+) -> dict[str, Any] | None:
+    """Coach agent: review performance metrics and suggest parameter nudges.
+
+    Called every 2 hours by the coach scheduler job — NOT on every tick.
+    Returns a dict of param → float nudges to apply, or None on failure.
+
+    The coach nudges params proactively (before the agent needs to pause)
+    based on patterns like: losing in trending regimes, tight SL causing
+    too many stops, low win rate, high drawdown.
+    """
+    try:
+        client = GrokClient()
+    except GrokUnavailableError:
+        return None
+
+    by_regime = metrics.get("by_regime", {})
+    regime_text = ""
+    if by_regime:
+        lines = []
+        for regime, stats in by_regime.items():
+            lines.append(
+                f"  {regime}: {stats['total']} trades, "
+                f"win_rate={stats['win_rate']}%, pnl={stats['pnl']:+.4f}"
+            )
+        regime_text = "Performance by market regime:\n" + "\n".join(lines)
+
+    space_text = json.dumps(
+        {k: {"min": v[0], "max": v[1]} for k, v in search_space.items()}, indent=2
+    )
+    trades_text = json.dumps(recent_trades[:10], indent=2) if recent_trades else "none"
+
+    prompt = f"""You are the Coach Agent for a crypto trading system.
+Review this agent's performance and suggest parameter adjustments.
+
+Strategy: {strategy_type}
+Current params: {json.dumps(current_params, indent=2)}
+
+Performance summary (last 30 trades):
+  Total trades: {metrics.get('total_trades', 0)}
+  Win rate: {metrics.get('win_rate', 0):.1f}%
+  Profit factor: {metrics.get('profit_factor', 0):.3f}  (>1.0 = profitable, <1.0 = losing)
+  Avg PnL per trade: {metrics.get('avg_pnl', 0):+.4f} USDT
+  Max drawdown: {metrics.get('max_drawdown_usdt', 0):.4f} USDT
+  Gross profit: {metrics.get('gross_profit', 0):.4f} | Gross loss: {metrics.get('gross_loss', 0):.4f}
+
+{regime_text}
+
+Recent closed trades (newest first):
+{trades_text}
+
+Allowed parameter search space:
+{space_text}
+
+Diagnose the most impactful issue and suggest ONE focused parameter change.
+For example:
+- If losing more in trending_up/trending_down than ranging → raise min_confidence or tighten stop_loss
+- If profit_factor < 1.0 with many small wins but big losses → tighten stop_loss_pct
+- If win_rate < 35% → widen deviation_pct (less frequent but higher-quality entries)
+- If win_rate > 60% but avg_pnl is negative → raise profit_target_pct
+- If performance looks fine (profit_factor > 1.2, win_rate > 45%) → suggest no change
+
+Return ONLY a JSON object. If no change is needed, return {{"no_change": true, "reason": "<why>"}}.
+Otherwise return param name → float pairs, e.g. {{"stop_loss_pct": 0.12, "min_confidence": 0.52}}.
+Values MUST be within the search space bounds above.
+"""
+    try:
+        result = await client.chat_json(
+            [{"role": "user", "content": prompt}],
+            system=_PARAM_SYSTEM,
+            mini=True,
+        )
+        if result.get("no_change"):
+            logger.debug("coach review: no change needed — {}", result.get("reason", ""))
+            return None
+        validated: dict[str, Any] = {}
+        for k, (lo, hi) in search_space.items():
+            if k in result:
+                try:
+                    v = float(result[k])
+                    validated[k] = round(max(lo, min(hi, v)), 4)
+                except (TypeError, ValueError):
+                    pass
+        return validated if validated else None
+    except GrokError as exc:
+        logger.warning("coach review failed: {}", exc)
+        return None
+
+
 async def nudge_stuck_agent(
     agent_data: dict[str, Any],
     last_signals: list[str],

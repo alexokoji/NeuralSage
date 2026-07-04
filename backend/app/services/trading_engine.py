@@ -1098,6 +1098,12 @@ class TradingEngine:
                 "strategy_params_snapshot": (decision_context or {}).get("strategy_params_snapshot", {}),
                 **(signal.metadata or {}),
             },
+            # Derive market_regime: prefer AI's market_structure tag, fall back to
+            # the strategy's trend-filter tag saved in signal metadata.
+            market_regime=(
+                (signal.metadata or {}).get("market_structure")
+                or (signal.metadata or {}).get("market_regime")
+            ) or None,
             risk_checks=risk_payload,
             opened_at=datetime.now(timezone.utc),
         )
