@@ -47,8 +47,8 @@ SEARCH_SPACES: dict[str, dict[str, tuple[float, float]]] = {
         "min_confidence": (0.4, 0.8),
     },
     "micro_scalping": {
-        "stop_loss_pct": (0.05, 0.5),
-        "profit_target_pct": (0.1, 0.8),
+        "stop_loss_pct": (0.15, 0.50),    # floor at 0.15% — below this is within 1m noise
+        "profit_target_pct": (0.35, 1.0), # floor at 0.35% — must clear fees + have real upside
         "deviation_pct": (0.04, 0.20),
         "min_confidence": (0.4, 0.8),
     },

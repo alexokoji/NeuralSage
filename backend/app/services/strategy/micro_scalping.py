@@ -24,9 +24,9 @@ class MicroScalpingStrategy(Strategy):
     default_params: dict[str, Any] = {
         "ema_period": 5,
         "deviation_pct": 0.06,
-        "profit_target_pct": 0.30,   # 0.30% covers Bitget's ~0.12% round-trip fee with margin
-        "stop_loss_pct": 0.10,
-        "max_trades_per_hour": 15,
+        "profit_target_pct": 0.50,   # 0.50% → 2.5:1 R/R with 0.20% SL; covers fees with real margin
+        "stop_loss_pct": 0.20,       # 0.20% puts SL above typical 1m noise (bid-ask + micro-volatility)
+        "max_trades_per_hour": 6,    # was 15 — fewer, higher-quality entries only
         "position_size_pct": 1.5,
         "min_confidence": 0.45,
         # Trend filter: EMA slope over `trend_period` bars must be below
@@ -83,23 +83,39 @@ class MicroScalpingStrategy(Strategy):
         min_conf = float(params.get("min_confidence", 0.50))
 
         # Trend filter: block entries that fight a strong trend.
-        # In a strong downtrend (slope < -threshold) a long is fading the trend.
-        # In a strong uptrend (slope > +threshold) a short is fading the trend.
         long_trend_blocked = trend_slope < -trend_slope_threshold
         short_trend_blocked = trend_slope > trend_slope_threshold
+
+        # Reversal confirmation: the last candle must already be moving back
+        # toward the EMA before we enter. This avoids catching falling knives
+        # (price is still dropping when we enter long) and rising knives (still
+        # rising when we enter short).
+        last_open = float(candles["open"].iloc[-1])
+        last_close_price = float(close.iloc[-1])
+        candle_is_green = last_close_price > last_open   # close > open
+        candle_is_red = last_close_price < last_open
 
         # Extreme dip → fade to long
         if deviation <= -threshold:
             strength = abs(deviation) / threshold
             conf = min(0.85, 0.55 + strength * 0.15)
             if long_trend_blocked:
-                # Downtrend: penalise confidence but still emit the signal so the
-                # AI layer can evaluate whether the dip is deep enough to trade.
-                # Never drop below 0.30 so it still appears as a candidate for Groq.
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"downtrend caution (slope={trend_slope:.3f}%)"
+            # Reversal confirmation: require a green candle (price bouncing back up)
+            # before entering long. If still red, downgrade to hold — the dip is
+            # still developing and we'd be catching a falling knife.
+            if not candle_is_green:
+                meta["reversal_pending"] = True
+                proximity = abs(deviation) / max(threshold, 0.01)
+                hold_conf = min(0.50, 0.35 + proximity * 0.15)
+                return Signal(
+                    "hold", hold_conf,
+                    f"scalp: {deviation:.3f}% below EMA — waiting for reversal candle",
+                    metadata=meta,
+                )
             reason = (
-                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)"
+                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%) + reversal candle"
                 + (f" [trend caution slope={trend_slope:.3f}%]" if long_trend_blocked else "")
             )
             return Signal(
@@ -118,8 +134,18 @@ class MicroScalpingStrategy(Strategy):
             if short_trend_blocked:
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"uptrend caution (slope={trend_slope:.3f}%)"
+            # Reversal confirmation: require a red candle before entering short.
+            if not candle_is_red:
+                meta["reversal_pending"] = True
+                proximity = abs(deviation) / max(threshold, 0.01)
+                hold_conf = min(0.50, 0.35 + proximity * 0.15)
+                return Signal(
+                    "hold", hold_conf,
+                    f"scalp: {deviation:.3f}% above EMA — waiting for reversal candle",
+                    metadata=meta,
+                )
             reason = (
-                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)"
+                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%) + reversal candle"
                 + (f" [trend caution slope={trend_slope:.3f}%]" if short_trend_blocked else "")
             )
             return Signal(

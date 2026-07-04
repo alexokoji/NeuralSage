@@ -119,6 +119,27 @@ class TradingEngine:
                         "agent {} cleaned over-high deviation_pct={:.3f}→0.06",
                         agent.id, saved_dev,
                     )
+                # One-time cleanup: SL ≤ 0.10% is within 1m bid-ask noise;
+                # TP ≤ 0.30% barely covers Bitget fees after a winning trade.
+                # Both stale values cause excessive stops and near-zero net wins.
+                saved_sl = float((sp.get("stop_loss_pct") or 0))
+                if 0 < saved_sl <= 0.10:
+                    sp["stop_loss_pct"] = 0.20
+                    agent.strategy_params = sp
+                    applied = True
+                    logger.info(
+                        "agent {} cleaned noise-floor stop_loss_pct={:.3f}→0.20",
+                        agent.id, saved_sl,
+                    )
+                saved_tp = float((sp.get("profit_target_pct") or 0))
+                if 0 < saved_tp <= 0.30:
+                    sp["profit_target_pct"] = 0.50
+                    agent.strategy_params = sp
+                    applied = True
+                    logger.info(
+                        "agent {} cleaned low profit_target_pct={:.3f}→0.50",
+                        agent.id, saved_tp,
+                    )
                 if applied:
                     logger.info(
                         "agent {} small-account normalization: capital=${:.2f},"
@@ -390,12 +411,15 @@ class TradingEngine:
                     if groq_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{groq_signal.action}")
             elif candidates:
-                # AI unavailable — execute the best screener signal directly
+                # AI unavailable — skip new entries entirely.
+                # An unvalidated entry based on EMA deviation alone loses more than it wins
+                # because the screener has no view of market structure, volume, or momentum.
+                # Exits are still allowed so we can close positions already open.
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
-                if screener_signal.action in ("enter_long", "enter_short") and screener_signal.confidence >= 0.50:
-                    logger.info("agent {} AI unavailable — executing screener fallback {} {} (conf {:.2f})",
-                                agent.id, symbol, screener_signal.action, screener_signal.confidence)
+                if screener_signal.action == "exit" and open_position is not None:
+                    logger.info("agent {} AI unavailable — allowing exit-only signal for {} (conf {:.2f})",
+                                agent.id, symbol, screener_signal.action)
                     agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = f"{symbol} (no AI)"
                     try:
@@ -413,6 +437,11 @@ class TradingEngine:
                         logger.error("agent {} _execute_signal for {} raised exception: {}", agent.id, symbol, exc, exc_info=True)
                     if screener_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
+                else:
+                    logger.info(
+                        "agent {} AI unavailable — skipping {} {} (no unvalidated entries)",
+                        agent.id, symbol, screener_signal.action,
+                    )
 
         finally:
             # Reconcile before closing the client so get_positions still works.
