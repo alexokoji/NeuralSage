@@ -107,6 +107,9 @@ class AgentPublic(BaseModel):
     protect_mode: bool = False
     profit_protect_pct: float = 15.0
     recovery_mode: bool = False
+    performance_snapshot: dict[str, Any] = Field(default_factory=dict)
+    last_coach_review_at: datetime | None = None
+    ai_decision_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentControlAction(BaseModel):
