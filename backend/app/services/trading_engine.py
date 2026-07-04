@@ -108,6 +108,17 @@ class TradingEngine:
                         "agent {} cleaned over-high min_confidence={:.2f}→0.50",
                         agent.id, saved_mc,
                     )
+                # One-time cleanup: deviation_pct above 0.15% makes micro_scalping
+                # signals extremely rare on 1m timeframes; reset to strategy default.
+                saved_dev = float((sp.get("deviation_pct") or 0))
+                if saved_dev > 0.15:
+                    sp["deviation_pct"] = 0.06
+                    agent.strategy_params = sp
+                    applied = True
+                    logger.info(
+                        "agent {} cleaned over-high deviation_pct={:.3f}→0.06",
+                        agent.id, saved_dev,
+                    )
                 if applied:
                     logger.info(
                         "agent {} small-account normalization: capital=${:.2f},"

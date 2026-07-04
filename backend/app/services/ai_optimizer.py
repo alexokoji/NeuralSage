@@ -49,7 +49,7 @@ SEARCH_SPACES: dict[str, dict[str, tuple[float, float]]] = {
     "micro_scalping": {
         "stop_loss_pct": (0.05, 0.5),
         "profit_target_pct": (0.1, 0.8),
-        "deviation_pct": (0.1, 0.6),
+        "deviation_pct": (0.04, 0.20),
         "min_confidence": (0.4, 0.8),
     },
 }
