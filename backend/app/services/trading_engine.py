@@ -12,6 +12,7 @@ Pipeline for one tick of one agent:
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -1369,44 +1370,49 @@ class TradingEngine:
         last_price: float,
         reason: str,
     ) -> None:
-        order = OrderRequest(
-            symbol=position.symbol,
-            side="sell" if position.side == "long" else "buy",
-            order_type="market",
-            quantity=float(position.quantity),
-            reduce_only=True,
-            client_order_id=f"agent-{agent.id}-close-{uuid.uuid4().hex[:8]}",
-        )
-        close_failed = False
         if not agent.is_paper_trade:
-            try:
-                await client.place_order(order)
-            except ExchangeError as exc:
-                close_failed = True
-                agent.last_error = f"close failed: {exc}"
+            _max_attempts = 5
+            _last_exc: Exception | None = None
+            for _attempt in range(1, _max_attempts + 1):
+                order = OrderRequest(
+                    symbol=position.symbol,
+                    side="sell" if position.side == "long" else "buy",
+                    order_type="market",
+                    quantity=float(position.quantity),
+                    reduce_only=True,
+                    # Fresh client_order_id each attempt so exchange doesn't reject as duplicate.
+                    client_order_id=f"agent-{agent.id}-close-{uuid.uuid4().hex[:8]}",
+                )
+                try:
+                    await client.place_order(order)
+                    _last_exc = None
+                    break  # success
+                except Exception as exc:
+                    _last_exc = exc
+                    logger.warning(
+                        "agent {} {} close attempt {}/{} failed: {} — retrying in 1s",
+                        agent.id, position.symbol, _attempt, _max_attempts, exc,
+                    )
+                    if _attempt < _max_attempts:
+                        await asyncio.sleep(1)
+
+            if _last_exc is not None:
+                # All 5 attempts failed — leave position open in DB so the next tick retries.
+                # Never mark a trade closed if the exchange order didn't go through.
+                agent.last_error = f"close failed after {_max_attempts} attempts: {_last_exc}"
                 await RiskEngine.log_risk_event(
                     user_id=agent.user_id,
                     agent_id=agent.id,
                     event_type="api_error",
                     severity="critical",
-                    message=f"position close failed: {exc}",
+                    message=f"position close failed after {_max_attempts} attempts: {_last_exc}",
                     details={"symbol": position.symbol},
                 )
-                logger.error("agent {} {} close order failed (will persist closure locally): {}", agent.id, position.symbol, exc)
-            except Exception as exc:
-                close_failed = True
-                agent.last_error = f"close failed: {exc}"
-                logger.exception("agent {} {} unexpected error during close (will persist closure locally): {}", agent.id, position.symbol, exc)
-
-        if close_failed:
-            # Exchange rejected the close order — leave position open in DB so the
-            # next tick retries. Marking it closed here would desync NeuralSage from
-            # Bitget (trade shows "filled" locally but position stays live on exchange).
-            logger.error(
-                "agent {} {} close order failed — leaving position open for retry next tick",
-                agent.id, position.symbol,
-            )
-            return
+                logger.error(
+                    "agent {} {} all {} close attempts failed — position left open for next tick: {}",
+                    agent.id, position.symbol, _max_attempts, _last_exc,
+                )
+                return
 
         entry_price = float(position.entry_price)
         qty = float(position.quantity)
