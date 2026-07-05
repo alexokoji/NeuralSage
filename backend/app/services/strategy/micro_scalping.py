@@ -102,20 +102,12 @@ class MicroScalpingStrategy(Strategy):
             if long_trend_blocked:
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"downtrend caution (slope={trend_slope:.3f}%)"
-            # Reversal confirmation: require a green candle (price bouncing back up)
-            # before entering long. If still red, downgrade to hold — the dip is
-            # still developing and we'd be catching a falling knife.
-            if not candle_is_green:
-                meta["reversal_pending"] = True
-                proximity = abs(deviation) / max(threshold, 0.01)
-                hold_conf = min(0.50, 0.35 + proximity * 0.15)
-                return Signal(
-                    "hold", hold_conf,
-                    f"scalp: {deviation:.3f}% below EMA — waiting for reversal candle",
-                    metadata=meta,
-                )
+            # Reversal candle state is passed to GPT as context — GPT evaluates
+            # candle structure, wicks, and momentum from 20 candles + indicators.
+            meta["reversal_pending"] = not candle_is_green
             reason = (
-                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%) + reversal candle"
+                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)"
+                + (" + reversal candle" if candle_is_green else " — reversal pending, GPT to confirm")
                 + (f" [trend caution slope={trend_slope:.3f}%]" if long_trend_blocked else "")
             )
             return Signal(
@@ -134,18 +126,10 @@ class MicroScalpingStrategy(Strategy):
             if short_trend_blocked:
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"uptrend caution (slope={trend_slope:.3f}%)"
-            # Reversal confirmation: require a red candle before entering short.
-            if not candle_is_red:
-                meta["reversal_pending"] = True
-                proximity = abs(deviation) / max(threshold, 0.01)
-                hold_conf = min(0.50, 0.35 + proximity * 0.15)
-                return Signal(
-                    "hold", hold_conf,
-                    f"scalp: {deviation:.3f}% above EMA — waiting for reversal candle",
-                    metadata=meta,
-                )
+            meta["reversal_pending"] = not candle_is_red
             reason = (
-                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%) + reversal candle"
+                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)"
+                + (" + reversal candle" if candle_is_red else " — reversal pending, GPT to confirm")
                 + (f" [trend caution slope={trend_slope:.3f}%]" if short_trend_blocked else "")
             )
             return Signal(
