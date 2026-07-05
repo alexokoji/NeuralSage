@@ -342,14 +342,13 @@ class TradingEngine:
             # Total: 3 agents × 1 Groq + 1 GPT = 6 AI calls per tick
             candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
 
-            # Allow agents to prefer the raw screener if its confidence exceeds
-            # the AI's confidence by a small margin (configurable per-agent).
-            # groq_best stores: (symbol, df, screener_signal, groq_signal, open_pos)
-            groq_best = None  # (symbol, df, screener_signal, groq_signal, open_pos)
+            # Phase 2: GPT makes the final approve/reject on the screener's best pick.
+            # Groq is removed — screener signals go directly to GPT.
+            # GPT only gets called when the screener has an actionable signal
+            # (enter_long / enter_short / exit). Holds skip GPT entirely.
+            gpt_best = None  # (symbol, df, screener_signal, open_pos)
             decision_entry: dict | None = None  # captured for ai_decision_log
-            screener_advantage_delta = float(
-                (agent.strategy_params or {}).get("screener_advantage_delta", 0.10)
-            )
+
             for symbol, df, screener_signal, open_position in candidates[:1]:
                 logger.info(
                     "agent {} screener best: {} {} conf={:.2f} regime={} reversal_pending={}",
@@ -370,46 +369,19 @@ class TradingEngine:
                     },
                     "groq": None,
                     "gpt": None,
-                    "final": "hold",
+                    "final": "screener_hold",
                     "trade_placed": False,
                 }
-                try:
-                    groq_signal = await grok_analyst.groq_analyse(
-                        screener_signal, df,
-                        symbol=symbol, timeframe=agent.timeframe,
-                        strategy_type=strategy.type,
-                        strategy_params=agent.strategy_params or {},
-                        agent_context={
-                            "agent_name": agent.name,
-                            "in_position": open_position is not None,
-                            "screener_said": screener_signal.action,
-                            "screener_confidence": screener_signal.confidence,
-                            **learning_context,
-                        },
-                    )
-                    ai_used = True
-                    decision_entry["groq"] = {
-                        "action": groq_signal.action,
-                        "confidence": round(groq_signal.confidence, 3),
-                        "reason": groq_signal.reason,
-                    }
-                    if groq_signal.action in ("enter_long", "enter_short", "exit"):
-                        if groq_best is None or groq_signal.confidence > (groq_best[3].confidence if groq_best[3] else 0):
-                            groq_best = (symbol, df, screener_signal, groq_signal, open_position)
-                    else:
-                        decision_entry["final"] = "groq_hold"
-                except Exception as exc:
-                    logger.debug("agent {} {} Groq analysis failed: {}", agent.id, symbol, exc)
-                    if decision_entry:
-                        decision_entry["groq"] = {"action": "error", "confidence": 0, "reason": str(exc)}
+                if screener_signal.action in ("enter_long", "enter_short", "exit"):
+                    gpt_best = (symbol, df, screener_signal, open_position)
 
-            # Phase 3: GPT final decision on Groq's best pick
-            if groq_best:
-                symbol, df, screener_signal, groq_signal, open_position = groq_best
+            # GPT final decision — only runs when screener has an actionable signal
+            if gpt_best:
+                symbol, df, screener_signal, open_position = gpt_best
                 try:
                     ai_used = True
                     final_signal = await grok_analyst.gpt_decide(
-                        groq_signal, df,
+                        screener_signal, df,
                         symbol=symbol, timeframe=agent.timeframe,
                         agent_name=agent.name,
                         learning_context=learning_context,
@@ -425,56 +397,38 @@ class TradingEngine:
                     agent.last_signal = final_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
-                        agent,
-                        api_key,
-                        client,
-                        symbol,
-                        df,
-                        final_signal,
-                        open_position,
-                        ai_available=True,
+                        agent, api_key, client, symbol, df,
+                        final_signal, open_position, ai_available=True,
                     )
                     if final_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{final_signal.action}")
                         if decision_entry:
                             decision_entry["trade_placed"] = True
                 except Exception as exc:
-                    logger.warning("agent {} GPT decision failed: {} — using Groq signal", agent.id, exc)
+                    logger.warning("agent {} GPT decision failed: {} — using screener signal", agent.id, exc)
                     if decision_entry:
                         decision_entry["gpt"] = {"decision": "error", "confidence": 0, "reason": str(exc)}
-                        decision_entry["final"] = groq_signal.action
-                    agent.last_signal = groq_signal.action
+                        decision_entry["final"] = screener_signal.action
+                    agent.last_signal = screener_signal.action
                     agent.last_signal_symbol = symbol
                     await self._execute_signal(
-                        agent,
-                        api_key,
-                        client,
-                        symbol,
-                        df,
-                        groq_signal,
-                        open_position,
-                        ai_available=True,
+                        agent, api_key, client, symbol, df,
+                        screener_signal, open_position, ai_available=True,
                     )
-                    if groq_signal.action != "hold":
-                        signals_summary.append(f"{symbol}:{groq_signal.action}")
+                    if screener_signal.action != "hold":
+                        signals_summary.append(f"{symbol}:{screener_signal.action}")
                         if decision_entry:
                             decision_entry["trade_placed"] = True
             elif candidates:
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
-                if ai_used:
-                    # Groq ran but returned hold — nothing to trade this tick.
-                    logger.debug(
-                        "agent {} Groq returned hold for {} — no entry this tick",
-                        agent.id, symbol,
-                    )
-                elif screener_signal.action == "exit" and open_position is not None:
-                    # AI was completely unavailable but we have an open position that
-                    # wants to exit — allow the exit to protect capital.
-                    logger.info("agent {} AI offline — allowing exit-only signal for {} (conf {:.2f})",
+                if screener_signal.action == "exit" and open_position is not None:
+                    # Screener wants to exit an open position — allow it even if GPT
+                    # is offline, to protect capital.
+                    logger.info("agent {} screener exit signal for {} (conf {:.2f}) — executing without GPT",
                                 agent.id, symbol, screener_signal.confidence)
                     agent.last_signal = screener_signal.action
-                    agent.last_signal_symbol = f"{symbol} (no AI)"
+                    agent.last_signal_symbol = f"{symbol} (screener exit)"
                     try:
                         await self._execute_signal(
                             agent, api_key, client, symbol, df,
@@ -485,11 +439,10 @@ class TradingEngine:
                     if screener_signal.action != "hold":
                         signals_summary.append(f"{symbol}:{screener_signal.action}")
                 else:
-                    # AI completely offline — block all new entries.
-                    # Unvalidated EMA-deviation signals lose more than they win.
-                    logger.info(
-                        "agent {} AI offline — holding {} (no unvalidated entries allowed)",
-                        agent.id, symbol,
+                    # Screener returned hold on best candidate — nothing to do.
+                    logger.debug(
+                        "agent {} screener hold for {} (conf {:.2f}) — no entry this tick",
+                        agent.id, symbol, screener_signal.confidence,
                     )
 
         finally:

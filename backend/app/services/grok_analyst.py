@@ -369,7 +369,7 @@ Output JSON:
 
 
 async def gpt_decide(
-    groq_signal: Signal,
+    screener_signal: Signal,
     candles: pd.DataFrame,
     *,
     symbol: str,
@@ -377,15 +377,16 @@ async def gpt_decide(
     agent_name: str,
     learning_context: dict[str, Any] | None = None,
 ) -> Signal:
-    """GPT makes the final approve/reject decision on Groq's best pick.
+    """GPT makes the final approve/reject decision on the screener's best pick.
 
-    This is a cheap, focused call — GPT only sees the summary, not raw candles.
+    Groq is bypassed — the strategy screener passes its signal directly here.
+    GPT sees the last 5 candles + agent context and approves or rejects.
     Called at most once per agent per tick.
     """
     try:
         client = GPTClient()
     except GPTUnavailableError:
-        return groq_signal
+        return screener_signal
 
     last_5 = candles.tail(5)[["open", "high", "low", "close"]].round(4).to_string()
     ctx = learning_context or {}
@@ -426,9 +427,9 @@ async def gpt_decide(
         + (" | ⚠ RECOVERY MODE" if recovery else "")
     )
 
-    prompt = f"""Groq AI analysed {symbol} on {timeframe} and recommends: {groq_signal.action} (confidence: {groq_signal.confidence:.2f})
-Groq's reasoning: {groq_signal.reason}
-SL: {groq_signal.suggested_stop_loss_pct}% | TP: {groq_signal.suggested_take_profit_pct}%
+    prompt = f"""Strategy screener analysed {symbol} on {timeframe} and signals: {screener_signal.action} (confidence: {screener_signal.confidence:.2f})
+Screener reasoning: {screener_signal.reason}
+SL: {screener_signal.suggested_stop_loss_pct}% | TP: {screener_signal.suggested_take_profit_pct}%
 
 Last 5 candles:
 {last_5}
@@ -437,12 +438,14 @@ Agent: {agent_name}
 {performance_text}
 {open_pos_text}
 {recent_text}
-{"⚠ ALREADY IN POSITION ON THIS PAIR — REJECT any new entry." if already_on_this_pair and groq_signal.action in ("enter_long", "enter_short") else ""}
+{"⚠ ALREADY IN POSITION ON THIS PAIR — REJECT any new entry." if already_on_this_pair and screener_signal.action in ("enter_long", "enter_short") else ""}
+
+The screener uses EMA deviation mean-reversion on 1m: it only signals entry when price deviates >= threshold from EMA AND a reversal candle confirms direction. This is a technically sound setup.
 
 Do you APPROVE or REJECT this trade? Consider:
-1. Does the reasoning make sense given the candle data?
-2. Is the risk/reward acceptable?
-3. Is this a good entry point or are we chasing?
+1. Do the last 5 candles confirm the reversal direction the screener identified?
+2. Is the risk/reward acceptable given current volatility?
+3. Is this a good entry point or has the move already played out?
 4. Given the recent trade history and loss streak, is now a good time to enter?
    If loss_streak >= 3, require stronger conviction before approving.
 5. If there is already an open position on this pair, REJECT a new entry.
@@ -460,21 +463,21 @@ Output JSON: {{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "rea
         gpt_conf = float(result.get("confidence", 0.5))
 
         if decision == "approve":
-            logger.info("GPT APPROVED {} {} (conf {:.2f}): {}", symbol, groq_signal.action, gpt_conf, reason)
+            logger.info("GPT APPROVED {} {} (conf {:.2f}): {}", symbol, screener_signal.action, gpt_conf, reason)
             return Signal(
-                action=groq_signal.action,
+                action=screener_signal.action,
                 confidence=gpt_conf,
-                reason=f"[GPT approved] {reason} | [Groq] {groq_signal.reason}",
-                suggested_stop_loss_pct=groq_signal.suggested_stop_loss_pct,
-                suggested_take_profit_pct=groq_signal.suggested_take_profit_pct,
-                metadata={**(groq_signal.metadata or {}), "ai_provider": "gpt+groq", "gpt_decision": "approve"},
+                reason=f"[GPT approved] {reason} | [Screener] {screener_signal.reason}",
+                suggested_stop_loss_pct=screener_signal.suggested_stop_loss_pct,
+                suggested_take_profit_pct=screener_signal.suggested_take_profit_pct,
+                metadata={**(screener_signal.metadata or {}), "ai_provider": "gpt", "gpt_decision": "approve"},
             )
         else:
-            logger.info("GPT REJECTED {} {} (conf {:.2f}): {}", symbol, groq_signal.action, gpt_conf, reason)
+            logger.info("GPT REJECTED {} {} (conf {:.2f}): {}", symbol, screener_signal.action, gpt_conf, reason)
             return Signal("hold", 0.3, f"[GPT rejected] {reason}", metadata={"gpt_decision": "reject"})
     except GPTError as exc:
-        logger.warning("GPT decision failed: {} — using Groq signal", exc)
-        return groq_signal
+        logger.warning("GPT decision failed: {} — using screener signal", exc)
+        return screener_signal
 
 
 async def suggest_params(
