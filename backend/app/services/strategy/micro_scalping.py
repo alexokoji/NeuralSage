@@ -27,7 +27,7 @@ class MicroScalpingStrategy(Strategy):
     type = "micro_scalping"
     default_params: dict[str, Any] = {
         "ema_period": 5,
-        "deviation_pct": 0.06,
+        "deviation_pct": 0.12,
         "profit_target_pct": 0.50,
         "stop_loss_pct": 0.20,
         "max_trades_per_hour": 6,
