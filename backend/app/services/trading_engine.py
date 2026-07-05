@@ -1398,6 +1398,16 @@ class TradingEngine:
                 agent.last_error = f"close failed: {exc}"
                 logger.exception("agent {} {} unexpected error during close (will persist closure locally): {}", agent.id, position.symbol, exc)
 
+        if close_failed:
+            # Exchange rejected the close order — leave position open in DB so the
+            # next tick retries. Marking it closed here would desync NeuralSage from
+            # Bitget (trade shows "filled" locally but position stays live on exchange).
+            logger.error(
+                "agent {} {} close order failed — leaving position open for retry next tick",
+                agent.id, position.symbol,
+            )
+            return
+
         entry_price = float(position.entry_price)
         qty = float(position.quantity)
         gross = (last_price - entry_price) * qty
@@ -1460,12 +1470,7 @@ class TradingEngine:
             trade.pnl_pct = (gross / max(entry_price * qty, 1e-9)) * 100
             trade.status = "filled"
             trade.closed_at = datetime.now(timezone.utc)
-            # If the exchange close failed, still persist the closure locally
-            # so the agent doesn't get stuck with stale open positions.
-            note = reason
-            if close_failed:
-                note = f"{reason} (exchange close failed — persisted locally)"
-            trade.notes = note
+            trade.notes = reason
             await trade.save()
         else:
             logger.warning(
