@@ -409,8 +409,23 @@ class TradingEngine:
                     "final": "screener_hold",
                     "trade_placed": False,
                 }
-                if screener_signal.action in ("enter_long", "enter_short", "exit"):
+                # Exits skip GPT — they are time-critical and must not wait on a
+                # rate-limited API call. The screener's exit logic is deterministic
+                # (price reverted to EMA, or SL/TP hit) so GPT adds no value here.
+                if screener_signal.action in ("enter_long", "enter_short"):
                     gpt_best = (symbol, df, screener_signal, open_position)
+                elif screener_signal.action == "exit" and open_position is not None:
+                    gpt_best = None
+                    agent.last_signal = "exit"
+                    agent.last_signal_symbol = symbol
+                    if decision_entry:
+                        decision_entry["final"] = "exit"
+                        decision_entry["gpt"] = {"decision": "screener_exit", "confidence": screener_signal.confidence, "reason": "exit executed directly — no GPT needed"}
+                    await self._execute_signal(
+                        agent, api_key, client, symbol, df,
+                        screener_signal, open_position, ai_available=True,
+                    )
+                    signals_summary.append(f"{symbol}:exit")
 
             # GPT final decision — only runs when screener has an actionable signal
             if gpt_best:
@@ -1424,6 +1439,23 @@ class TradingEngine:
                     await client.place_order(order)
                     _last_exc = None
                     break  # success
+                except ExchangeError as exc:
+                    # 22002 = "No position to close" — exchange already closed it (SL/TP hit).
+                    # Stop retrying and fall through to reconcile the DB.
+                    if "22002" in str(exc):
+                        logger.info(
+                            "agent {} {} close order: exchange says no position (22002) — already closed by SL/TP, reconciling DB",
+                            agent.id, position.symbol,
+                        )
+                        _last_exc = None
+                        break
+                    _last_exc = exc
+                    logger.warning(
+                        "agent {} {} close attempt {}/{} failed: {} — retrying in 1s",
+                        agent.id, position.symbol, _attempt, _max_attempts, exc,
+                    )
+                    if _attempt < _max_attempts:
+                        await asyncio.sleep(1)
                 except Exception as exc:
                     _last_exc = exc
                     logger.warning(
@@ -1434,8 +1466,7 @@ class TradingEngine:
                         await asyncio.sleep(1)
 
             if _last_exc is not None:
-                # All 5 attempts failed — leave position open in DB so the next tick retries.
-                # Never mark a trade closed if the exchange order didn't go through.
+                # All attempts failed — leave position open so the next tick retries.
                 agent.last_error = f"close failed after {_max_attempts} attempts: {_last_exc}"
                 await RiskEngine.log_risk_event(
                     user_id=agent.user_id,
