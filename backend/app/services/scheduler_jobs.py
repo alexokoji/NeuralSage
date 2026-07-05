@@ -852,31 +852,36 @@ async def run_coach_review() -> dict:
             if not strategy_type:
                 continue
 
-            # Build the time filter: only trades since the last coach review
-            query_filters: list = [
-                Trade.agent_id == agent.id,
-                Trade.status == "filled",
-            ]
-            last_review = getattr(agent, "last_coach_review_at", None)
-            if last_review:
-                if last_review.tzinfo is None:
-                    last_review = last_review.replace(tzinfo=timezone.utc)
-                query_filters.append(Trade.closed_at >= last_review)
-
-            recent_trades = (
-                await Trade.find(*query_filters)
+            # All recent closed trades — used for snapshot (always runs)
+            all_recent = (
+                await Trade.find(Trade.agent_id == agent.id, Trade.status == "filled")
                 .sort(-Trade.closed_at)
                 .limit(_COACH_REVIEW_LOOKBACK)
                 .to_list()
             )
 
-            if len(recent_trades) < _COACH_MIN_TRADES:
+            if not all_recent:
                 continue
 
-            metrics = compute_metrics(recent_trades)
+            metrics = compute_metrics(all_recent)
             agent.performance_snapshot = {**metrics, "computed_at": now.isoformat()}
             agent.last_coach_review_at = now
             reviewed += 1
+
+            # New trades since last review — only used to decide whether to nudge
+            last_review = getattr(agent, "last_coach_review_at", None)
+            new_trade_filters: list = [Trade.agent_id == agent.id, Trade.status == "filled"]
+            if last_review:
+                if last_review.tzinfo is None:
+                    last_review = last_review.replace(tzinfo=timezone.utc)
+                new_trade_filters.append(Trade.closed_at >= last_review)
+            new_trades = (
+                await Trade.find(*new_trade_filters)
+                .sort(-Trade.closed_at)
+                .limit(_COACH_REVIEW_LOOKBACK)
+                .to_list()
+            )
+            recent_trades = new_trades if len(new_trades) >= _COACH_MIN_TRADES else all_recent
 
             logger.info(
                 "coach review agent {} strategy={} trades={} win_rate={:.1f}% pf={:.3f} max_dd={:.4f}",
