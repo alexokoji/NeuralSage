@@ -388,7 +388,8 @@ async def gpt_decide(
     except GPTUnavailableError:
         return screener_signal
 
-    last_5 = candles.tail(5)[["open", "high", "low", "close"]].round(4).to_string()
+    candle_text = _summarise_candles(candles, n=20)
+    indicator_text = _indicator_summary(candles)
     ctx = learning_context or {}
 
     recent_trades = ctx.get("recent_trades", [])
@@ -398,21 +399,17 @@ async def gpt_decide(
 
     open_pos_text = ""
     if open_positions:
-        lines = [
-            f"  {p['symbol']} {p['side']} @ {p['entry_price']} unrealized={p['unrealized_pnl']:+.4f}"
-            for p in open_positions
-        ]
         open_pos_text = "Open positions: " + " | ".join(
-            f"{p['symbol']} {p['side']}" for p in open_positions
+            f"{p['symbol']} {p['side']} @ {p['entry_price']} unrealized={p['unrealized_pnl']:+.4f}"
+            for p in open_positions
         )
 
     recent_text = ""
     if recent_trades:
         lines = []
         for t in recent_trades[:5]:
-            status = t.get("status", "")
             pnl = t.get("pnl", 0)
-            pnl_str = f"{pnl:+.4f}" if status == "filled" else "STILL OPEN"
+            pnl_str = f"{pnl:+.4f}" if t.get("status") == "filled" else "STILL OPEN"
             lines.append(f"  {t.get('symbol')} {t.get('side')} → {pnl_str}")
         recent_text = "Recent trades:\n" + "\n".join(lines)
 
@@ -427,36 +424,52 @@ async def gpt_decide(
         + (" | ⚠ RECOVERY MODE" if recovery else "")
     )
 
-    prompt = f"""Strategy screener analysed {symbol} on {timeframe} and signals: {screener_signal.action} (confidence: {screener_signal.confidence:.2f})
-Screener reasoning: {screener_signal.reason}
-SL: {screener_signal.suggested_stop_loss_pct}% | TP: {screener_signal.suggested_take_profit_pct}%
+    prompt = f"""You are reviewing a trade signal for final approval.
 
-Last 5 candles:
-{last_5}
+SYMBOL: {symbol} | TIMEFRAME: {timeframe}
 
-Agent: {agent_name}
+SCREENER SIGNAL: {screener_signal.action} (confidence: {screener_signal.confidence:.2f})
+SCREENER REASONING: {screener_signal.reason}
+PROPOSED SL: {screener_signal.suggested_stop_loss_pct}% | TP: {screener_signal.suggested_take_profit_pct}%
+
+The screener uses 5-period EMA deviation mean-reversion on {timeframe}. It only fires when:
+  1. Price deviates >= threshold % from EMA (stretched too far)
+  2. The last candle is already reversing back toward the EMA (reversal candle confirmed)
+Both conditions are met for this signal.
+
+MARKET DATA — last 20 candles (oldest → newest):
+{candle_text}
+
+INDICATORS: {indicator_text}
+
+AGENT PERFORMANCE:
 {performance_text}
 {open_pos_text}
 {recent_text}
 {"⚠ ALREADY IN POSITION ON THIS PAIR — REJECT any new entry." if already_on_this_pair and screener_signal.action in ("enter_long", "enter_short") else ""}
 
-The screener uses EMA deviation mean-reversion on 1m: it only signals entry when price deviates >= threshold from EMA AND a reversal candle confirms direction. This is a technically sound setup.
+STEP-BY-STEP ANALYSIS REQUIRED before deciding:
+1. Momentum: are the last 3-5 candles supporting the reversal direction?
+2. Candle structure: are wicks/bodies showing rejection at this price level?
+3. Volume: is volume on the reversal candle higher than recent average?
+4. Has the reversal move already run most of its distance (too late to enter)?
+5. Loss streak risk: streak={loss_streak} — does risk justify entry right now?
+6. R/R: with SL={screener_signal.suggested_stop_loss_pct}% and TP={screener_signal.suggested_take_profit_pct}%, is the ratio acceptable?
 
-Do you APPROVE or REJECT this trade? Consider:
-1. Do the last 5 candles confirm the reversal direction the screener identified?
-2. Is the risk/reward acceptable given current volatility?
-3. Is this a good entry point or has the move already played out?
-4. Given the recent trade history and loss streak, is now a good time to enter?
-   If loss_streak >= 3, require stronger conviction before approving.
-5. If there is already an open position on this pair, REJECT a new entry.
-
-Output JSON: {{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1 sentence>"}}
+After your analysis, output ONLY this JSON (no other text):
+{{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1-2 sentences summarising your key finding>"}}
 """
     try:
         result = await client.chat_json(
             [{"role": "user", "content": prompt}],
-            system="You are a senior trading risk manager. Approve good setups, reject bad ones. Be decisive.",
-            max_tokens=200,
+            system=(
+                "You are a professional crypto scalp trader reviewing a mean-reversion setup on a 1-minute chart. "
+                "You have deep knowledge of price action, momentum, and R/R. "
+                "Think step by step through the candle data before deciding. "
+                "CAPITAL PRESERVATION IS PRIORITY — only approve when the reversal is clearly confirmed and R/R is favourable. "
+                "When uncertain, REJECT. A missed trade costs nothing; a bad trade loses money."
+            ),
+            max_tokens=350,
         )
         decision = result.get("decision", "reject")
         reason = result.get("reason", "")
