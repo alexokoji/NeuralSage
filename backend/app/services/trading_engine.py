@@ -108,15 +108,17 @@ class TradingEngine:
                         "agent {} cleaned over-high min_confidence={:.2f}→0.50",
                         agent.id, saved_mc,
                     )
-                # One-time cleanup: deviation_pct above 0.15% makes micro_scalping
-                # signals extremely rare on 1m timeframes; reset to strategy default.
+                # One-time cleanup: deviation_pct above 0.07% suppresses signals on
+                # 1m timeframes in low-volatility markets; reset to strategy default.
+                # The optimizer ceiling is 0.20% but even 0.076% is too wide for
+                # sub-$10 accounts where 1m candles average 0.05-0.07% deviation.
                 saved_dev = float((sp.get("deviation_pct") or 0))
-                if saved_dev > 0.15:
+                if saved_dev > 0.07:
                     sp["deviation_pct"] = 0.06
                     agent.strategy_params = sp
                     applied = True
                     logger.info(
-                        "agent {} cleaned over-high deviation_pct={:.3f}→0.06",
+                        "agent {} cleaned over-high deviation_pct={:.4f}→0.06",
                         agent.id, saved_dev,
                     )
                 # One-time cleanup: SL ≤ 0.10% is within 1m bid-ask noise;
