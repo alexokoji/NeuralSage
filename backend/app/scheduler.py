@@ -86,7 +86,7 @@ def start() -> None:
 
     sched.add_job(
         run_coach_review,
-        CronTrigger(hour="*/2", minute=30),
+        CronTrigger(minute="*/30"),
         id="coach_review",
         max_instances=1,
         coalesce=True,

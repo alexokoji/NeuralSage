@@ -820,7 +820,7 @@ async def run_daily_rollover() -> dict:
 # Coach agent — runs every 2 hours
 # --------------------------------------------------------------------------- #
 
-_COACH_MIN_TRADES = 5          # don't review unless the agent has at least this many closed trades
+_COACH_MIN_TRADES = 3          # don't review unless the agent has at least this many closed trades
 _COACH_REVIEW_LOOKBACK = 30    # number of recent closed trades to analyse
 
 
