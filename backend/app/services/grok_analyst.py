@@ -424,6 +424,24 @@ async def gpt_decide(
         + (" | ⚠ RECOVERY MODE" if recovery else "")
     )
 
+    reversal_pending = bool((screener_signal.metadata or {}).get("reversal_pending", False))
+    wick_rejection = bool((screener_signal.metadata or {}).get("wick_rejection", False))
+
+    if reversal_pending and not wick_rejection:
+        reversal_status = (
+            "⚠ REVERSAL NOT CONFIRMED — price is still moving against the trade direction. "
+            "No reversal candle and no rejection wick detected. This is a HIGH RISK of catching a falling knife / rising knife. "
+            "DEFAULT ACTION: REJECT unless you see clear momentum reversal evidence in the last 2-3 candles."
+        )
+    elif reversal_pending and wick_rejection:
+        reversal_status = (
+            "⚠ REVERSAL PARTIALLY CONFIRMED — candle has a rejection wick showing price pushed back, "
+            "but the candle body hasn't closed in the reversal direction yet. "
+            "Approve ONLY if the wick is prominent (>35% of candle range) and 2+ prior candles also show rejection."
+        )
+    else:
+        reversal_status = "✓ REVERSAL CONFIRMED — candle has already closed in the reversal direction."
+
     prompt = f"""You are reviewing a trade signal for final approval.
 
 SYMBOL: {symbol} | TIMEFRAME: {timeframe}
@@ -432,10 +450,10 @@ SCREENER SIGNAL: {screener_signal.action} (confidence: {screener_signal.confiden
 SCREENER REASONING: {screener_signal.reason}
 PROPOSED SL: {screener_signal.suggested_stop_loss_pct}% | TP: {screener_signal.suggested_take_profit_pct}%
 
-The screener uses 5-period EMA deviation mean-reversion on {timeframe}. It only fires when:
-  1. Price deviates >= threshold % from EMA (stretched too far)
-  2. The last candle is already reversing back toward the EMA (reversal candle confirmed)
-Both conditions are met for this signal.
+REVERSAL STATUS: {reversal_status}
+
+The screener uses 5-period EMA deviation mean-reversion: fires when price deviates >= threshold % from EMA.
+Your job is to confirm whether a genuine reversal is forming before capital is committed.
 
 MARKET DATA — last 20 candles (oldest → newest):
 {candle_text}
@@ -448,16 +466,21 @@ AGENT PERFORMANCE:
 {recent_text}
 {"⚠ ALREADY IN POSITION ON THIS PAIR — REJECT any new entry." if already_on_this_pair and screener_signal.action in ("enter_long", "enter_short") else ""}
 
-STEP-BY-STEP ANALYSIS REQUIRED before deciding:
-1. Momentum: are the last 3-5 candles supporting the reversal direction?
-2. Candle structure: are wicks/bodies showing rejection at this price level?
-3. Volume: is volume on the reversal candle higher than recent average?
-4. Has the reversal move already run most of its distance (too late to enter)?
-5. Loss streak risk: streak={loss_streak} — does risk justify entry right now?
-6. R/R: with SL={screener_signal.suggested_stop_loss_pct}% and TP={screener_signal.suggested_take_profit_pct}%, is the ratio acceptable?
+HARD REJECTION RULES (any one = automatic reject):
+- Reversal not confirmed AND no rejection wick visible in candle data
+- Last 3 candles all moving in the entry direction (momentum still against us)
+- Loss streak >= 3 and reversal is not confirmed
+- Already in a position on this pair
+
+STEP-BY-STEP ANALYSIS:
+1. Reversal evidence: do the last 2-3 candles show wicks, doji, or body reversal toward EMA?
+2. Momentum shift: has selling/buying pressure visibly weakened in recent candles?
+3. Volume: is there a volume spike on the potential reversal candle?
+4. Has the move already reversed most of the way back (too late, entry at bad R/R)?
+5. R/R check: SL={screener_signal.suggested_stop_loss_pct}% vs TP={screener_signal.suggested_take_profit_pct}% — acceptable?
 
 After your analysis, output ONLY this JSON (no other text):
-{{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1-2 sentences summarising your key finding>"}}
+{{"decision": "approve" or "reject", "confidence": <0.3-0.90>, "reason": "<1-2 sentences on the key evidence>"}}
 """
     try:
         result = await client.chat_json(

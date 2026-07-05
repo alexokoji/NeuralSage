@@ -86,14 +86,20 @@ class MicroScalpingStrategy(Strategy):
         long_trend_blocked = trend_slope < -trend_slope_threshold
         short_trend_blocked = trend_slope > trend_slope_threshold
 
-        # Reversal confirmation: the last candle must already be moving back
-        # toward the EMA before we enter. This avoids catching falling knives
-        # (price is still dropping when we enter long) and rising knives (still
-        # rising when we enter short).
         last_open = float(candles["open"].iloc[-1])
         last_close_price = float(close.iloc[-1])
-        candle_is_green = last_close_price > last_open   # close > open
+        last_high = float(candles["high"].iloc[-1])
+        last_low = float(candles["low"].iloc[-1])
+        candle_is_green = last_close_price > last_open
         candle_is_red = last_close_price < last_open
+        candle_range = max(last_high - last_low, 1e-9)
+
+        # Wick rejection: even without a closed reversal candle, a prominent
+        # wick shows buyers/sellers pushed back intracandle.
+        lower_wick = last_open - last_low if not candle_is_green else last_close_price - last_low
+        upper_wick = last_high - last_open if not candle_is_red else last_high - last_close_price
+        has_rejection_wick_long = (lower_wick / candle_range) >= 0.35   # long lower wick → buyers stepped in
+        has_rejection_wick_short = (upper_wick / candle_range) >= 0.35  # long upper wick → sellers stepped in
 
         # Extreme dip → fade to long
         if deviation <= -threshold:
@@ -102,18 +108,22 @@ class MicroScalpingStrategy(Strategy):
             if long_trend_blocked:
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"downtrend caution (slope={trend_slope:.3f}%)"
-            # Reversal candle state is passed to GPT as context — GPT evaluates
-            # candle structure, wicks, and momentum from 20 candles + indicators.
-            meta["reversal_pending"] = not candle_is_green
+            reversal_confirmed = candle_is_green
+            wick_hint = has_rejection_wick_long and not reversal_confirmed
+            meta["reversal_pending"] = not reversal_confirmed
+            meta["wick_rejection"] = wick_hint
+            if reversal_confirmed:
+                reversal_note = " + reversal candle confirmed"
+            elif wick_hint:
+                reversal_note = " — wick rejection visible, awaiting candle close"
+            else:
+                reversal_note = " — NO reversal signal yet (high rejection risk)"
             reason = (
-                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%)"
-                + (" + reversal candle" if candle_is_green else " — reversal pending, GPT to confirm")
+                f"scalp: {deviation:.3f}% below EMA (threshold {threshold}%){reversal_note}"
                 + (f" [trend caution slope={trend_slope:.3f}%]" if long_trend_blocked else "")
             )
             return Signal(
-                "enter_long",
-                conf,
-                reason,
+                "enter_long", conf, reason,
                 suggested_stop_loss_pct=params["stop_loss_pct"],
                 suggested_take_profit_pct=params["profit_target_pct"],
                 metadata=meta,
@@ -126,16 +136,22 @@ class MicroScalpingStrategy(Strategy):
             if short_trend_blocked:
                 conf = max(conf * 0.5, 0.30)
                 meta["trend_filter"] = f"uptrend caution (slope={trend_slope:.3f}%)"
-            meta["reversal_pending"] = not candle_is_red
+            reversal_confirmed = candle_is_red
+            wick_hint = has_rejection_wick_short and not reversal_confirmed
+            meta["reversal_pending"] = not reversal_confirmed
+            meta["wick_rejection"] = wick_hint
+            if reversal_confirmed:
+                reversal_note = " + reversal candle confirmed"
+            elif wick_hint:
+                reversal_note = " — wick rejection visible, awaiting candle close"
+            else:
+                reversal_note = " — NO reversal signal yet (high rejection risk)"
             reason = (
-                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%)"
-                + (" + reversal candle" if candle_is_red else " — reversal pending, GPT to confirm")
+                f"scalp: {deviation:.3f}% above EMA (threshold {threshold}%){reversal_note}"
                 + (f" [trend caution slope={trend_slope:.3f}%]" if short_trend_blocked else "")
             )
             return Signal(
-                "enter_short",
-                conf,
-                reason,
+                "enter_short", conf, reason,
                 suggested_stop_loss_pct=params["stop_loss_pct"],
                 suggested_take_profit_pct=params["profit_target_pct"],
                 metadata=meta,
