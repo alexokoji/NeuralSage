@@ -130,8 +130,8 @@ function AIDecisionRow({ entry }: { entry: AIDecisionEntry }) {
         </button>
       </div>
 
-      {/* GPT summary (always visible when present) */}
-      {entry.gpt && (
+      {/* GPT summary when GPT was called */}
+      {entry.gpt ? (
         <div className="flex items-start gap-1.5">
           <span className="shrink-0 text-blue-400 font-semibold w-8">GPT</span>
           <span className={cn('shrink-0 rounded px-1 py-0.5 text-[9px] font-medium', gptBadge(entry.gpt.decision))}>
@@ -139,7 +139,13 @@ function AIDecisionRow({ entry }: { entry: AIDecisionEntry }) {
           </span>
           <span className="text-muted-foreground leading-relaxed">{entry.gpt.reason}</span>
         </div>
-      )}
+      ) : entry.screener?.reason ? (
+        /* Screener hold — show screener's own reasoning */
+        <div className="flex items-start gap-1.5">
+          <span className="shrink-0 text-zinc-400 font-semibold w-8">SCR</span>
+          <span className="text-muted-foreground leading-relaxed">{entry.screener.reason}</span>
+        </div>
+      ) : null}
 
       {/* Expanded: screener details */}
       {expanded && (
