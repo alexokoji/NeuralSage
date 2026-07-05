@@ -367,7 +367,6 @@ class TradingEngine:
                         "regime": (screener_signal.metadata or {}).get("market_regime", "?"),
                         "reversal_pending": bool((screener_signal.metadata or {}).get("reversal_pending", False)),
                     },
-                    "groq": None,
                     "gpt": None,
                     "final": "screener_hold",
                     "trade_placed": False,

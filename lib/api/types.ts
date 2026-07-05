@@ -134,11 +134,6 @@ export interface AIDecisionEntry {
     regime: string;
     reversal_pending: boolean;
   };
-  groq: {
-    action: string;
-    confidence: number;
-    reason: string;
-  } | null;
   gpt: {
     decision: string;
     confidence: number;

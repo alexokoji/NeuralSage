@@ -96,7 +96,7 @@ const actionBadge = (action: string) => {
   if (action === 'enter_long') return 'bg-green-500/15 text-green-400 border-green-500/20';
   if (action === 'enter_short') return 'bg-red-500/15 text-red-400 border-red-500/20';
   if (action === 'exit') return 'bg-orange-500/15 text-orange-400 border-orange-500/20';
-  if (action === 'groq_hold') return 'bg-zinc-500/15 text-zinc-400 border-zinc-500/20';
+  if (action === 'screener_hold') return 'bg-zinc-500/15 text-zinc-400 border-zinc-500/20';
   return 'bg-zinc-500/10 text-muted-foreground border-border';
 };
 
@@ -130,14 +130,6 @@ function AIDecisionRow({ entry }: { entry: AIDecisionEntry }) {
         </button>
       </div>
 
-      {/* Groq summary (always visible) */}
-      {entry.groq && (
-        <div className="flex items-start gap-1.5">
-          <span className="shrink-0 text-purple-400 font-semibold w-8">Groq</span>
-          <span className="text-muted-foreground leading-relaxed">{entry.groq.reason}</span>
-        </div>
-      )}
-
       {/* GPT summary (always visible when present) */}
       {entry.gpt && (
         <div className="flex items-start gap-1.5">
@@ -159,12 +151,6 @@ function AIDecisionRow({ entry }: { entry: AIDecisionEntry }) {
           <div className="text-zinc-600 pl-16 leading-relaxed">{entry.screener.reason}</div>
           {entry.screener.reversal_pending && (
             <div className="pl-16 text-amber-500/70">Waiting for reversal candle</div>
-          )}
-          {entry.groq && (
-            <div className="flex items-center gap-1.5">
-              <span className="shrink-0 text-zinc-500 font-semibold w-14">Groq conf</span>
-              <span className="text-zinc-500">{entry.groq.confidence}</span>
-            </div>
           )}
           {entry.gpt && (
             <div className="flex items-center gap-1.5">
@@ -421,7 +407,7 @@ function AgentCard({
         </div>
       )}
 
-      {/* AI Activity Feed — Groq + GPT reasoning per tick */}
+      {/* AI Activity Feed — GPT reasoning per tick */}
       {(agent.ai_decision_log ?? []).length > 0 && (
         <div className="bg-accent/20 border border-border rounded-lg overflow-hidden">
           <button
