@@ -57,7 +57,7 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
         if dd > max_dd:
             max_dd = dd
 
-    # Per-regime breakdown — market_regime field set at trade open
+    # Per-regime breakdown
     regime_stats: dict[str, dict[str, Any]] = {}
     for t in closed:
         regime = t.market_regime or (t.signal_data or {}).get("market_regime") or "unknown"
@@ -72,6 +72,27 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
         stats["win_rate"] = round(stats["wins"] / max(stats["total"], 1) * 100, 1)
         stats["pnl"] = round(stats["pnl"], 4)
 
+    # Entry quality breakdown — did RSI confirmation and volume spike accompany wins vs losses?
+    rsi_confirmed_trades = [t for t in closed if _signal_flag(t, "rsi") is not None]
+    rsi_confirmed_wins = [t for t in rsi_confirmed_trades if _signal_flag(t, "rsi") and t.pnl > 0]
+    rsi_unconfirmed_losses = [
+        t for t in rsi_confirmed_trades if not _signal_flag(t, "rsi") and t.pnl <= 0
+    ]
+    volume_spike_trades = [t for t in closed if _signal_flag(t, "volume_spike") is not None]
+    volume_spike_wins = [t for t in volume_spike_trades if _signal_flag(t, "volume_spike") and t.pnl > 0]
+
+    entry_quality = {
+        "rsi_confirmed_count": len(rsi_confirmed_trades),
+        "rsi_confirmed_win_rate": round(
+            len(rsi_confirmed_wins) / max(len([t for t in rsi_confirmed_trades if _signal_flag(t, "rsi")]), 1) * 100, 1
+        ),
+        "rsi_unconfirmed_loss_count": len(rsi_unconfirmed_losses),
+        "volume_spike_count": len(volume_spike_trades),
+        "volume_spike_win_rate": round(
+            len(volume_spike_wins) / max(len([t for t in volume_spike_trades if _signal_flag(t, "volume_spike")]), 1) * 100, 1
+        ),
+    }
+
     return {
         "total_trades": len(closed),
         "win_rate": round(win_rate, 1),
@@ -81,4 +102,15 @@ def compute_metrics(trades: list[Trade]) -> dict[str, Any]:
         "gross_profit": round(gross_profit, 4),
         "gross_loss": round(gross_loss, 4),
         "by_regime": regime_stats,
+        "entry_quality": entry_quality,
     }
+
+
+def _signal_flag(trade: "Trade", key: str):
+    """Extract a boolean flag from trade.signal_data metadata, or None if absent."""
+    sd = trade.signal_data or {}
+    meta = sd.get("metadata") or sd.get("screener_meta") or {}
+    val = meta.get(key)
+    if val is None:
+        return None
+    return bool(val)

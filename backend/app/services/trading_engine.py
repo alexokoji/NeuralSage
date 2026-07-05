@@ -277,6 +277,11 @@ class TradingEngine:
         # Phase 1: Run screener on ALL symbols (free, no API calls)
         candidates: list[tuple[str, Any, Any, Any]] = []  # (symbol, df, screener_signal, open_pos)
         signals_summary: list[str] = []
+
+        # Multi-timeframe: map 1m → 5m, 5m → 15m, 15m → 1h, else no HTF
+        _HTF_MAP = {"1m": "5m", "3m": "15m", "5m": "15m", "15m": "1h", "30m": "4h"}
+        htf = _HTF_MAP.get(agent.timeframe)
+
         try:
             for symbol in list(agent.trading_pairs or []):
                 try:
@@ -329,6 +334,38 @@ class TradingEngine:
                 )
                 screener_signal = strategy.evaluate(df, agent.strategy_params or {}, ctx)
 
+                # Multi-timeframe filter: skip new entries that fight the HTF trend.
+                # Only applies to entry signals — exits and holds are never blocked.
+                if htf and screener_signal.action in ("enter_long", "enter_short") and open_position is None:
+                    try:
+                        raw_htf = await client.get_candles(symbol, htf, limit=50)
+                        if len(raw_htf) >= 20:
+                            df_htf = candles_to_df(raw_htf)
+                            from app.services.strategy.indicators import ema as _ema
+                            htf_close = df_htf["close"]
+                            htf_ema20 = _ema(htf_close, 20)
+                            htf_slope = (
+                                (float(htf_ema20.iloc[-1]) - float(htf_ema20.iloc[-10]))
+                                / float(htf_ema20.iloc[-10]) * 100
+                            )
+                            # Strong HTF trend against the signal = skip
+                            _HTF_SLOPE_BLOCK = 0.08  # % over 10 bars
+                            htf_blocks_long = screener_signal.action == "enter_long" and htf_slope < -_HTF_SLOPE_BLOCK
+                            htf_blocks_short = screener_signal.action == "enter_short" and htf_slope > _HTF_SLOPE_BLOCK
+                            if htf_blocks_long or htf_blocks_short:
+                                logger.debug(
+                                    "agent {} {} {} blocked by HTF {} trend (slope={:.3f}%)",
+                                    agent.id, symbol, screener_signal.action, htf, htf_slope,
+                                )
+                                continue
+                            # Attach HTF context to signal metadata for GPT
+                            if screener_signal.metadata is None:
+                                screener_signal.metadata = {}
+                            screener_signal.metadata["htf_timeframe"] = htf
+                            screener_signal.metadata["htf_slope"] = round(htf_slope, 4)
+                    except Exception:
+                        pass  # HTF fetch failed — don't block the signal, just skip the filter
+
                 # Always include: non-hold signals, open positions
                 # Conditionally include: holds with high confidence (near threshold)
                 if (
@@ -338,9 +375,6 @@ class TradingEngine:
                 ):
                     candidates.append((symbol, df, screener_signal, open_position))
 
-            # Phase 2: Groq analyses the SINGLE best candidate per agent
-            # Phase 3: GPT makes final decision (1 call per agent)
-            # Total: 3 agents × 1 Groq + 1 GPT = 6 AI calls per tick
             candidates.sort(key=lambda c: (c[2].action == "hold", -c[2].confidence))
 
             # Phase 2: GPT makes the final approve/reject on the screener's best pick.

@@ -47,10 +47,14 @@ SEARCH_SPACES: dict[str, dict[str, tuple[float, float]]] = {
         "min_confidence": (0.4, 0.8),
     },
     "micro_scalping": {
-        "stop_loss_pct": (0.15, 0.50),    # floor at 0.15% — below this is within 1m noise
-        "profit_target_pct": (0.35, 1.0), # floor at 0.35% — must clear fees + have real upside
+        "stop_loss_pct": (0.15, 0.50),
+        "profit_target_pct": (0.35, 1.0),
         "deviation_pct": (0.04, 0.20),
         "min_confidence": (0.4, 0.8),
+        "rsi_oversold": (30.0, 45.0),
+        "rsi_overbought": (55.0, 70.0),
+        "volume_spike_ratio": (1.1, 2.5),
+        "trend_slope_threshold": (0.02, 0.08),
     },
 }
 

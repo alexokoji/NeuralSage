@@ -774,6 +774,15 @@ async def coach_review(
     )
     trades_text = json.dumps(recent_trades[:10], indent=2) if recent_trades else "none"
 
+    eq = metrics.get("entry_quality", {})
+    entry_quality_text = ""
+    if eq:
+        entry_quality_text = f"""
+Entry quality (RSI + volume gate analysis):
+  RSI-confirmed trades: {eq.get('rsi_confirmed_count', 'n/a')} | win rate when RSI confirmed: {eq.get('rsi_confirmed_win_rate', 'n/a')}%
+  Trades without RSI confirm that lost: {eq.get('rsi_unconfirmed_loss_count', 'n/a')}
+  Volume-spike trades: {eq.get('volume_spike_count', 'n/a')} | win rate with volume spike: {eq.get('volume_spike_win_rate', 'n/a')}%"""
+
     prompt = f"""You are the Coach Agent for a crypto trading system.
 Review this agent's performance and suggest parameter adjustments.
 
@@ -787,6 +796,7 @@ Performance summary (last 30 trades):
   Avg PnL per trade: {metrics.get('avg_pnl', 0):+.4f} USDT
   Max drawdown: {metrics.get('max_drawdown_usdt', 0):.4f} USDT
   Gross profit: {metrics.get('gross_profit', 0):.4f} | Gross loss: {metrics.get('gross_loss', 0):.4f}
+{entry_quality_text}
 
 {regime_text}
 
@@ -796,17 +806,18 @@ Recent closed trades (newest first):
 Allowed parameter search space:
 {space_text}
 
-Diagnose the most impactful issue and suggest ONE focused parameter change.
-For example:
-- If losing more in trending_up/trending_down than ranging → raise min_confidence or tighten stop_loss
+Diagnose the most impactful issue. Consider entry quality first:
+- If rsi_unconfirmed_loss_count is high → raise rsi_oversold (e.g. 38→35) to require deeper oversold before entry
+- If volume_spike_win_rate >> overall win_rate → raise volume_spike_ratio to only trade high-volume setups
+- If losing more in trending regimes → raise trend_slope_threshold to block more trend-fighting entries
 - If profit_factor < 1.0 with many small wins but big losses → tighten stop_loss_pct
-- If win_rate < 35% → widen deviation_pct (less frequent but higher-quality entries)
-- If win_rate > 60% but avg_pnl is negative → raise profit_target_pct
-- If performance looks fine (profit_factor > 1.2, win_rate > 45%) → suggest no change
+- If win_rate < 35% with RSI confirmed → widen deviation_pct slightly (price needs to stretch more)
+- If win_rate > 60% but avg_pnl negative → raise profit_target_pct
+- If performance looks fine (profit_factor > 1.2, win_rate > 45%) → no change
 
-Return ONLY a JSON object. If no change is needed, return {{"no_change": true, "reason": "<why>"}}.
-Otherwise return param name → float pairs, e.g. {{"stop_loss_pct": 0.12, "min_confidence": 0.52}}.
-Values MUST be within the search space bounds above.
+Return ONLY a JSON object. No change: {{"no_change": true, "reason": "<why>"}}.
+Otherwise param → float pairs e.g. {{"stop_loss_pct": 0.12, "rsi_oversold": 38.0}}.
+Values MUST be within the search space bounds.
 """
     try:
         result = await client.chat_json(
