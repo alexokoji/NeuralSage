@@ -721,13 +721,19 @@ async def coach_review(
     based on patterns like: losing in trending regimes, tight SL causing
     too many stops, low win rate, high drawdown.
 
-    Uses GPT as the primary diagnostician (more reliable reasoning over
-    structured data); falls back to Groq if GPT is unavailable.
+    Uses Groq for coach review to avoid consuming the OpenAI rate budget
+    reserved for real-time gpt_decide calls. Falls back to GPT if Groq
+    is unavailable.
     """
     try:
-        client, is_gpt = _get_premium_client()
+        client = GrokClient()
+        provider = "Groq"
     except GrokUnavailableError:
-        return None
+        try:
+            client = GPTClient()
+            provider = "GPT"
+        except GPTUnavailableError:
+            return None
 
     by_regime = metrics.get("by_regime", {})
     regime_text = ""
@@ -785,7 +791,6 @@ Values MUST be within the search space bounds above.
             system=_PARAM_SYSTEM,
             mini=True,
         )
-        provider = "GPT" if is_gpt else "Groq"
         if result.get("no_change"):
             logger.debug("coach review ({}): no change needed — {}", provider, result.get("reason", ""))
             return None
