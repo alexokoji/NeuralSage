@@ -331,7 +331,7 @@ class TradingEngine:
                 if (
                     screener_signal.action != "hold"
                     or open_position is not None
-                    or screener_signal.confidence > 0.42
+                    or screener_signal.confidence > 0.35
                 ):
                     candidates.append((symbol, df, screener_signal, open_position))
 
