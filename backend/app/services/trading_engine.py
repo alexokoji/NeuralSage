@@ -757,9 +757,11 @@ class TradingEngine:
             try:
                 entry = float(pos.entry_price)
                 qty = float(pos.quantity)
-                gross = (current - entry) * qty
+                raw = (current - entry) * qty
                 if pos.side == "short":
-                    gross = -gross
+                    raw = -raw
+                # Include round-trip fee so unrealized P&L reflects true balance impact
+                gross = raw - (entry * qty * 0.00120)
 
                 pos.current_price = current
                 pos.unrealized_pnl = gross
@@ -1484,9 +1486,14 @@ class TradingEngine:
 
         entry_price = float(position.entry_price)
         qty = float(position.quantity)
-        gross = (last_price - entry_price) * qty
+        raw_pnl = (last_price - entry_price) * qty
         if position.side == "short":
-            gross = -gross
+            raw_pnl = -raw_pnl
+        # Bitget taker fee: 0.06% per side = 0.12% round-trip on notional.
+        # Deduct from every close so displayed P&L matches actual balance change.
+        _fee_rate = 0.00120
+        fees = entry_price * qty * _fee_rate
+        gross = raw_pnl - fees
 
         position.is_open = False
         position.current_price = last_price
