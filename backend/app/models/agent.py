@@ -50,6 +50,8 @@ class Agent(Document):
     winning_trades: int = 0
     current_day_pnl: float = 0.0
     current_week_pnl: float = 0.0
+    total_funding_fees: float = 0.0
+    last_funding_sync_at: Optional[datetime] = None
     confidence_score: float = 50.0
 
     last_trade_at: Optional[datetime] = None

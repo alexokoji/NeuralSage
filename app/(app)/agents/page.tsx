@@ -195,6 +195,8 @@ function AgentCard({
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showAIFeed, setShowAIFeed] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
+  const [recalcResult, setRecalcResult] = useState<{ trades_processed: number; total_pnl: number } | null>(null);
 
   const fetchSuggestions = useCallback(async () => {
     setLoadingSuggestions(true);
@@ -499,7 +501,29 @@ function AgentCard({
         >
           {loadingSuggestions ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lightbulb className="w-3.5 h-3.5" />}
         </button>
+        <button
+          onClick={async () => {
+            setRecalculating(true);
+            setRecalcResult(null);
+            try {
+              const res = await api.recalculatePnl(agent.id);
+              setRecalcResult({ trades_processed: res.trades_processed, total_pnl: res.total_pnl });
+            } finally {
+              setRecalculating(false);
+            }
+          }}
+          disabled={recalculating}
+          className="py-2 px-3 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/20 text-violet-400 rounded-lg text-xs transition-all"
+          title="Recalculate P&L (deduct fees from history)"
+        >
+          {recalculating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TrendingUp className="w-3.5 h-3.5" />}
+        </button>
       </div>
+      {recalcResult && (
+        <div className="text-[10px] text-violet-400 bg-violet-500/10 border border-violet-500/20 rounded px-2 py-1">
+          P&L recalculated — {recalcResult.trades_processed} trades processed. New total: {recalcResult.total_pnl >= 0 ? '+' : ''}{recalcResult.total_pnl.toFixed(4)} USDT
+        </div>
+      )}
 
       {showSuggestions && suggestions && (
         <div className="border-t border-border pt-3 space-y-2">

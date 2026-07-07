@@ -949,3 +949,77 @@ async def run_coach_review() -> dict:
 
     logger.info("coach review complete: reviewed={} nudged={}", reviewed, nudged)
     return {"reviewed": reviewed, "nudged": nudged, "at": now.isoformat()}
+
+
+# --------------------------------------------------------------------------- #
+# Funding fee sync — runs every 8 hours
+# --------------------------------------------------------------------------- #
+
+async def sync_funding_fees() -> dict:
+    """Fetch funding fee history from Bitget and apply to agent P&L counters.
+
+    Funding fees on perpetual futures are charged every 8 hours and are NOT
+    reflected in trade P&L — they silently drain the balance. This job pulls
+    the history since the last sync and subtracts from total_pnl / day_pnl.
+    """
+    synced = 0
+    total_applied = 0.0
+    now = datetime.now(timezone.utc)
+
+    try:
+        agents = await Agent.find(Agent.status.in_(["active", "paused"])).to_list()
+    except Exception as exc:
+        logger.exception("funding sync: failed to query agents: {}", exc)
+        return {"synced": 0, "total_funding_applied": 0.0, "error": str(exc)}
+
+    for agent in agents:
+        try:
+            if not agent.api_key_id or agent.is_paper_trade:
+                continue
+            api_key = await ApiKey.get(agent.api_key_id)
+            if not api_key:
+                continue
+
+            client = build_client(api_key)
+            try:
+                last_sync = agent.last_funding_sync_at
+                start_ms = None
+                if last_sync:
+                    if last_sync.tzinfo is None:
+                        last_sync = last_sync.replace(tzinfo=timezone.utc)
+                    start_ms = int(last_sync.timestamp() * 1000)
+
+                fees = await client.get_funding_fees(start_ms=start_ms, limit=100)
+                if not fees:
+                    agent.last_funding_sync_at = now
+                    await agent.save()
+                    continue
+
+                total_fee = sum(f["amount"] for f in fees)
+                if total_fee == 0:
+                    agent.last_funding_sync_at = now
+                    await agent.save()
+                    continue
+
+                agent.total_funding_fees = round(float(agent.total_funding_fees or 0) + total_fee, 6)
+                agent.total_pnl = round(float(agent.total_pnl or 0) + total_fee, 6)
+                agent.current_day_pnl = round(float(agent.current_day_pnl or 0) + total_fee, 6)
+                agent.current_week_pnl = round(float(agent.current_week_pnl or 0) + total_fee, 6)
+                agent.last_funding_sync_at = now
+                await agent.save()
+
+                synced += 1
+                total_applied += total_fee
+                logger.info(
+                    "funding sync agent {}: {} fee records, total={:+.6f} USDT",
+                    agent.id, len(fees), total_fee,
+                )
+            finally:
+                await client.close()
+
+        except Exception as exc:
+            logger.warning("funding sync failed for agent {}: {}", agent.id, exc)
+
+    logger.info("funding sync complete: agents={} total_applied={:+.6f}", synced, total_applied)
+    return {"synced": synced, "total_funding_applied": round(total_applied, 6)}
+

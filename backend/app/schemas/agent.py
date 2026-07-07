@@ -110,6 +110,8 @@ class AgentPublic(BaseModel):
     performance_snapshot: dict[str, Any] = Field(default_factory=dict)
     last_coach_review_at: datetime | None = None
     ai_decision_log: list[dict[str, Any]] = Field(default_factory=list)
+    total_funding_fees: float = 0.0
+    last_funding_sync_at: datetime | None = None
 
 
 class AgentControlAction(BaseModel):

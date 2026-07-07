@@ -24,6 +24,7 @@ from app.services.scheduler_jobs import (
     run_optimization_sweep,
     run_trading_tick_for_all_agents,
     keep_alive_ping,
+    sync_funding_fees,
 )
 
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -88,6 +89,14 @@ def start() -> None:
         run_coach_review,
         CronTrigger(minute="*/30"),
         id="coach_review",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        sync_funding_fees,
+        CronTrigger(hour="*/8", minute=5),
+        id="funding_fee_sync",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

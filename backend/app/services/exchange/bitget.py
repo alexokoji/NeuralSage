@@ -444,5 +444,42 @@ class BitgetClient(ExchangeClient):
             })
         return out
 
+    async def get_funding_fees(
+        self,
+        symbol: str | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch funding fee history from Bitget USDT-FUTURES.
+
+        Returns list of dicts: {symbol, amount, fee_time_ms}
+        Negative amount = you paid, positive = you received.
+        """
+        params: dict[str, Any] = {
+            "productType": "USDT-FUTURES",
+            "pageSize": str(limit),
+        }
+        if symbol:
+            params["symbol"] = symbol
+        if start_ms:
+            params["startTime"] = str(start_ms)
+        if end_ms:
+            params["endTime"] = str(end_ms)
+
+        try:
+            data = await self._signed("GET", "/api/v2/mix/account/funding-rate-records", params=params)
+        except Exception:
+            raise
+
+        rows = data.get("result") or data.get("list") or (data if isinstance(data, list) else [])
+        out = []
+        for r in rows or []:
+            sym = str(r.get("symbol") or "").upper().replace("_UMCBL", "").replace("_DMCBL", "")
+            amount = float(r.get("amount") or r.get("fee") or r.get("settledFunding") or 0)
+            ts = int(r.get("settleTime") or r.get("cTime") or r.get("uTime") or 0)
+            out.append({"symbol": sym, "amount": amount, "fee_time_ms": ts})
+        return out
+
     async def close(self) -> None:
         await self._http.aclose()

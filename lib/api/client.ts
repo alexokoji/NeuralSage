@@ -152,6 +152,8 @@ export const api = {
   deleteAgent: (id: string) => request<void>('DELETE', `/api/v1/agents/${id}`),
   controlAgent: (id: string, action: 'start' | 'pause' | 'stop') =>
     request<Agent>('POST', `/api/v1/agents/${id}/control`, { action }),
+  recalculatePnl: (id: string) =>
+    request<{ recalculated: boolean; trades_processed: number; total_pnl: number; winning_trades: number; current_day_pnl: number }>('POST', `/api/v1/agents/${id}/recalculate-pnl`),
 
   // ----- trades -----
   listTrades: (limit = 50, status?: string) =>

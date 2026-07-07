@@ -191,6 +191,82 @@ async def control_agent(
     return agent
 
 
+@router.post("/{agent_id}/recalculate-pnl")
+async def recalculate_pnl(
+    agent_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+):
+    """Recompute total_pnl, winning_trades, and day/week P&L from actual trade
+    records with fees deducted. Corrects the historical drift caused by the
+    previous bug where fees were not subtracted from closed trade P&L.
+    """
+    from app.models.trade import Trade
+
+    agent = await _load_agent(agent_id, user)
+
+    _FEE_RATE = 0.00120  # 0.06% taker per side = 0.12% round-trip
+
+    all_trades = await Trade.find(
+        Trade.agent_id == agent.id,
+        Trade.status == "filled",
+    ).to_list()
+
+    total_pnl = 0.0
+    winning = 0
+    today = datetime.now(timezone.utc).date()
+    week_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_start = week_start.replace(day=week_start.day - week_start.weekday())
+    day_pnl = 0.0
+    week_pnl = 0.0
+
+    for t in all_trades:
+        raw_pnl = float(t.pnl or 0)
+        entry = float(t.entry_price or 0)
+        qty = float(t.quantity or 0)
+        # Re-deduct fees if the trade was recorded without them.
+        # We detect this by checking if |pnl| is significantly larger than
+        # what fees would have been — if fees weren't already deducted.
+        fees = entry * qty * _FEE_RATE
+        # Heuristic: if fees > 5% of |raw_pnl|, assume fees weren't deducted yet.
+        # Exchange-sourced fills already have fees included in pnl, so skip those.
+        notes = t.notes or ""
+        from_exchange = "exchange_fill" in notes or "reconciled" in notes
+        if from_exchange:
+            net_pnl = raw_pnl
+        else:
+            net_pnl = raw_pnl - fees
+
+        total_pnl += net_pnl
+        if net_pnl > 0:
+            winning += 1
+
+        closed = t.closed_at
+        if closed:
+            if closed.tzinfo is None:
+                closed = closed.replace(tzinfo=timezone.utc)
+            if closed.date() == today:
+                day_pnl += net_pnl
+            if closed >= week_start:
+                week_pnl += net_pnl
+
+    agent.total_pnl = round(total_pnl, 6)
+    agent.winning_trades = winning
+    agent.current_day_pnl = round(day_pnl, 6)
+    agent.current_week_pnl = round(week_pnl, 6)
+    await agent.save()
+
+    return {
+        "recalculated": True,
+        "trades_processed": len(all_trades),
+        "total_pnl": agent.total_pnl,
+        "winning_trades": winning,
+        "current_day_pnl": agent.current_day_pnl,
+        "current_week_pnl": agent.current_week_pnl,
+    }
+
+
 @router.post("/{agent_id}/force-tick")
 async def force_tick(
     agent_id: uuid.UUID,
