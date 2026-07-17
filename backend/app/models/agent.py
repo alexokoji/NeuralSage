@@ -104,5 +104,20 @@ class Agent(Document):
     performance_snapshot: dict[str, Any] = Field(default_factory=dict)
     last_coach_review_at: Optional[datetime] = None
 
+    # ── Living system consciousness ─────────────────────────────────────────
+    # The Strategy Guardian sets these every 20 min based on rolling trade
+    # performance. gpt_decide reads system_mood to shift its prompt tone.
+    system_mood: str = "neutral"       # "danger" | "cautious" | "neutral" | "confident"
+    guardian_verdict: str = "hold"     # "hold" | "revert"
+    guardian_notes: str = ""
+    last_guardian_review_at: Optional[datetime] = None
+    # Rolling snapshots of strategy_params before each change — guardian uses
+    # these to revert when a change hurts performance. Max 5 entries.
+    param_history: list[dict] = Field(default_factory=list)
+
+    # P&L Watchdog: measured drift vs exchange on last check.
+    pnl_drift: float = 0.0
+    last_pnl_watchdog_at: Optional[datetime] = None
+
     class Settings:
         name = "agents"

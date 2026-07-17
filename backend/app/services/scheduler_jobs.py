@@ -18,6 +18,9 @@ from app.models.trade import Trade
 from app.services.ai_optimizer import optimize_strategy_async
 import app.services.grok_analyst as grok_analyst
 from app.services.exchange import build_client
+from app.services.strategy_guardian import snapshot_params as _guardian_snapshot
+from app.services.pnl_watchdog import run_pnl_watchdog
+from app.services.strategy_guardian import run_strategy_guardian
 from app.services.learning import LearningService
 from app.services.strategy import get_strategy
 from app.services.strategy.indicators import candles_to_df
@@ -232,6 +235,8 @@ async def _study_and_reoptimize_for_resume(agent: Agent) -> None:
             f"on recent {len(df)} candles — market conditions unfavourable for {strategy_type}"
         )
 
+    # Snapshot before applying so guardian can revert if new params hurt
+    _guardian_snapshot(agent)
     agent.strategy_params = new_params
     agent.optimization_params = {
         "score": result.best_score,
@@ -612,6 +617,15 @@ async def run_optimization_sweep() -> dict:
             )
 
             base = {**(strat.default_params or {}), **(a.strategy_params or {})}
+            # Skip optimization if guardian has flagged a revert — wait for
+            # the agent to stabilize before tuning again.
+            if getattr(a, "guardian_verdict", "hold") == "revert":
+                logger.info(
+                    "optimization_sweep: skipping agent {} — guardian verdict is 'revert'",
+                    a.id,
+                )
+                continue
+
             result = await optimize_strategy_async(
                 strat,
                 df,
@@ -622,6 +636,8 @@ async def run_optimization_sweep() -> dict:
                 n_calls=20,
             )
 
+            # Snapshot before applying new params so guardian can revert if needed
+            _guardian_snapshot(a)
             a.strategy_params = result.best_params
             a.optimization_params = {
                 "score": result.best_score,
@@ -929,6 +945,8 @@ async def run_coach_review() -> dict:
                 )
 
                 if nudge:
+                    # Snapshot params before change so guardian can revert if it hurts
+                    _guardian_snapshot(agent)
                     merged = {**(agent.strategy_params or {}), **nudge}
                     agent.strategy_params = merged
                     nudged += 1
@@ -1022,4 +1040,20 @@ async def sync_funding_fees() -> dict:
 
     logger.info("funding sync complete: agents={} total_applied={:+.6f}", synced, total_applied)
     return {"synced": synced, "total_funding_applied": round(total_applied, 6)}
+
+
+# Re-export the autonomous bots so scheduler.py can import from one place.
+# The actual implementations live in their dedicated modules.
+__all__ = [
+    "run_trading_tick_for_all_agents",
+    "run_optimization_sweep",
+    "reconcile_exchange_positions",
+    "run_daily_rollover",
+    "run_coach_review",
+    "check_missed_rollover",
+    "keep_alive_ping",
+    "sync_funding_fees",
+    "run_pnl_watchdog",
+    "run_strategy_guardian",
+]
 

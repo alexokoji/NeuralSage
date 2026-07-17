@@ -417,12 +417,39 @@ async def gpt_decide(
     win_rate = ctx.get("win_rate_pct", 0)
     day_pnl = ctx.get("current_day_pnl", 0)
     recovery = ctx.get("recovery_mode", False)
+    system_mood = ctx.get("system_mood", "neutral") or "neutral"
+    guardian_notes = ctx.get("guardian_notes", "") or ""
 
     performance_text = (
         f"Win rate: {win_rate:.1f}% | Day P&L: {day_pnl:+.4f} USDT"
         f" | Loss streak: {loss_streak}"
         + (" | ⚠ RECOVERY MODE" if recovery else "")
     )
+
+    # Mood block — changes how strictly the AI gatekeeps entries
+    if system_mood == "danger":
+        mood_block = (
+            "⛔ SYSTEM STATUS: DANGER MODE\n"
+            f"The guardian reports: {guardian_notes}\n"
+            "You are in a losing streak. ONLY approve the most textbook-perfect setups.\n"
+            "Required confidence: ≥ 0.80. Any ambiguity, missing confirmation, or borderline setup = REJECT.\n"
+            "Capital preservation is the ONLY priority right now."
+        )
+    elif system_mood == "cautious":
+        mood_block = (
+            "⚠️ SYSTEM STATUS: CAUTIOUS MODE\n"
+            f"The guardian reports: {guardian_notes}\n"
+            "Recent performance is below target. Be selective — only approve clean setups.\n"
+            "Required confidence: ≥ 0.70. Skip anything marginal."
+        )
+    elif system_mood == "confident":
+        mood_block = (
+            "✅ SYSTEM STATUS: PERFORMING WELL\n"
+            f"The guardian reports: {guardian_notes}\n"
+            "Recent metrics are healthy. Maintain your discipline and approve quality setups."
+        )
+    else:
+        mood_block = ""
 
     reversal_pending = bool((screener_signal.metadata or {}).get("reversal_pending", False))
     wick_rejection = bool((screener_signal.metadata or {}).get("wick_rejection", False))
@@ -443,7 +470,7 @@ async def gpt_decide(
         reversal_status = "✓ REVERSAL CONFIRMED — candle has already closed in the reversal direction."
 
     prompt = f"""You are reviewing a trade signal for final approval.
-
+{f"{chr(10)}{mood_block}{chr(10)}" if mood_block else ""}
 SYMBOL: {symbol} | TIMEFRAME: {timeframe}
 
 SCREENER SIGNAL: {screener_signal.action} (confidence: {screener_signal.confidence:.2f})

@@ -25,6 +25,8 @@ from app.services.scheduler_jobs import (
     run_trading_tick_for_all_agents,
     keep_alive_ping,
     sync_funding_fees,
+    run_pnl_watchdog,
+    run_strategy_guardian,
 )
 
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -60,7 +62,7 @@ def start() -> None:
     )
     sched.add_job(
         reconcile_exchange_positions,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(minutes=2),
         id="exchange_reconciliation",
         max_instances=1,
         coalesce=True,
@@ -97,6 +99,22 @@ def start() -> None:
         sync_funding_fees,
         CronTrigger(hour="*/8", minute=5),
         id="funding_fee_sync",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        run_pnl_watchdog,
+        IntervalTrigger(minutes=15),
+        id="pnl_watchdog",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        run_strategy_guardian,
+        IntervalTrigger(minutes=20),
+        id="strategy_guardian",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

@@ -272,6 +272,9 @@ class TradingEngine:
                 ),
                 "recovery_mode": bool(agent.recovery_mode),
                 "max_concurrent_trades": int(agent.max_concurrent_trades or 1),
+                # Guardian consciousness — shifts AI prompt tone
+                "system_mood": getattr(agent, "system_mood", "neutral") or "neutral",
+                "guardian_notes": getattr(agent, "guardian_notes", "") or "",
             }
         except Exception as exc:
             logger.debug("agent {} learning context fetch failed: {}", agent.id, exc)
@@ -309,24 +312,50 @@ class TradingEngine:
                 open_position = await self._open_position(agent.id, symbol)
                 last_price = float(df["close"].iloc[-1])
 
-                # Auto TP/SL for paper trades
+                # TP/SL auto-close — for paper trades uses candle high/low for
+                # realistic fill detection; adds slippage to simulate exchange behaviour.
                 if open_position is not None:
                     open_position.current_price = last_price
                     sl = float(open_position.stop_loss or 0)
                     tp = float(open_position.take_profit or 0)
-                    if open_position.side == "long":
-                        hit_sl = sl > 0 and last_price <= sl
-                        hit_tp = tp > 0 and last_price >= tp
+                    if agent.is_paper_trade:
+                        import random as _random
+                        candle_high = float(df["high"].iloc[-1])
+                        candle_low = float(df["low"].iloc[-1])
+                        if open_position.side == "long":
+                            hit_sl = sl > 0 and candle_low <= sl
+                            hit_tp = tp > 0 and candle_high >= tp
+                        else:
+                            hit_sl = sl > 0 and candle_high >= sl
+                            hit_tp = tp > 0 and candle_low <= tp
+                        if hit_tp:
+                            # Simulate partial slippage: TP fills slightly under the level
+                            slip = _random.uniform(0.0001, 0.0004)
+                            fill = tp * (1 - slip) if open_position.side == "long" else tp * (1 + slip)
+                            await self._close_position(agent, api_key, client, open_position, fill, "paper_tp")
+                            signals_summary.append(f"{symbol}:TP")
+                            continue
+                        if hit_sl:
+                            # Simulate gap-through slippage: SL fills slightly past the level
+                            slip = _random.uniform(0.0002, 0.0010)
+                            fill = sl * (1 - slip) if open_position.side == "long" else sl * (1 + slip)
+                            await self._close_position(agent, api_key, client, open_position, fill, "paper_sl")
+                            signals_summary.append(f"{symbol}:SL")
                     else:
-                        hit_sl = sl > 0 and last_price >= sl
-                        hit_tp = tp > 0 and last_price <= tp
-                    if hit_tp:
-                        await self._close_position(agent, api_key, client, open_position, tp, "take profit hit")
-                        signals_summary.append(f"{symbol}:TP")
-                        continue
-                    if hit_sl:
-                        await self._close_position(agent, api_key, client, open_position, sl, "stop loss hit")
-                        signals_summary.append(f"{symbol}:SL")
+                        # Live trade: just check close price; exchange handles actual SL/TP fills
+                        if open_position.side == "long":
+                            hit_sl = sl > 0 and last_price <= sl
+                            hit_tp = tp > 0 and last_price >= tp
+                        else:
+                            hit_sl = sl > 0 and last_price >= sl
+                            hit_tp = tp > 0 and last_price <= tp
+                        if hit_tp:
+                            await self._close_position(agent, api_key, client, open_position, tp, "take profit hit")
+                            signals_summary.append(f"{symbol}:TP")
+                            continue
+                        if hit_sl:
+                            await self._close_position(agent, api_key, client, open_position, sl, "stop loss hit")
+                            signals_summary.append(f"{symbol}:SL")
                         continue
 
                 ctx = StrategyContext(
@@ -1282,13 +1311,26 @@ class TradingEngine:
         )
 
         if agent.is_paper_trade:
-            logger.info("agent {} {} paper trade path: qty={} entry={}", agent.id, symbol, quantity, entry_price)
+            import random as _rand
+            # Simulate market impact and bid-ask spread (0.02–0.06% each side)
+            _slippage_pct = _rand.uniform(0.0002, 0.0006)
+            simulated_fill = (
+                entry_price * (1 + _slippage_pct)
+                if order.side == "buy"
+                else entry_price * (1 - _slippage_pct)
+            )
+            # Simulate exchange acknowledgement latency (0.3–1.5 seconds)
+            await asyncio.sleep(_rand.uniform(0.3, 1.5))
+            logger.info(
+                "agent {} {} paper fill: qty={} entry={} fill={} slippage={:.4f}%",
+                agent.id, symbol, quantity, entry_price, simulated_fill, _slippage_pct * 100,
+            )
             placed = OrderResult(
                 exchange_order_id=f"paper-{uuid.uuid4().hex[:12]}",
                 status="filled",
-                avg_fill_price=entry_price,
+                avg_fill_price=simulated_fill,
                 filled_qty=quantity,
-                raw={"paper": True},
+                raw={"paper": True, "slippage_pct": round(_slippage_pct * 100, 4)},
             )
         else:
             try:

@@ -122,6 +122,14 @@ export interface Agent {
   };
   last_coach_review_at?: string | null;
   ai_decision_log?: AIDecisionEntry[];
+  total_funding_fees?: number;
+  last_funding_sync_at?: string | null;
+  system_mood?: 'danger' | 'cautious' | 'neutral' | 'confident';
+  guardian_verdict?: 'hold' | 'revert';
+  guardian_notes?: string;
+  last_guardian_review_at?: string | null;
+  pnl_drift?: number;
+  last_pnl_watchdog_at?: string | null;
 }
 
 export interface AIDecisionEntry {

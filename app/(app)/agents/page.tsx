@@ -457,6 +457,22 @@ function AgentCard({
             </span>
           </div>
         )}
+        {agent.system_mood && agent.system_mood !== 'neutral' && (
+          <div className={`flex items-center gap-1.5 text-[9px] px-2 py-1 rounded border ${
+            agent.system_mood === 'danger'
+              ? 'bg-red-500/10 border-red-500/30 text-red-400'
+              : agent.system_mood === 'cautious'
+              ? 'bg-orange-500/10 border-orange-500/30 text-orange-400'
+              : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+          }`}>
+            <span className="font-semibold uppercase tracking-wide">
+              {agent.system_mood === 'danger' ? '⛔ DANGER' : agent.system_mood === 'cautious' ? '⚠️ CAUTIOUS' : '✅ CONFIDENT'}
+            </span>
+            {agent.guardian_notes && (
+              <span className="opacity-70 truncate">{agent.guardian_notes}</span>
+            )}
+          </div>
+        )}
         {agent.last_error && (
           <div className="flex items-start gap-1 bg-red-500/5 border border-red-500/20 rounded-md px-2 py-1.5">
             <span className="text-[9px] text-red-400 leading-relaxed">{agent.last_error}</span>

@@ -112,6 +112,12 @@ class AgentPublic(BaseModel):
     ai_decision_log: list[dict[str, Any]] = Field(default_factory=list)
     total_funding_fees: float = 0.0
     last_funding_sync_at: datetime | None = None
+    system_mood: str = "neutral"
+    guardian_verdict: str = "hold"
+    guardian_notes: str = ""
+    last_guardian_review_at: datetime | None = None
+    pnl_drift: float = 0.0
+    last_pnl_watchdog_at: datetime | None = None
 
 
 class AgentControlAction(BaseModel):
