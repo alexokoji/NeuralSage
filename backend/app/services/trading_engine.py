@@ -486,20 +486,37 @@ class TradingEngine:
                         if decision_entry:
                             decision_entry["trade_placed"] = True
                 except Exception as exc:
-                    logger.warning("agent {} GPT decision failed: {} — using screener signal", agent.id, exc)
-                    if decision_entry:
-                        decision_entry["gpt"] = {"decision": "error", "confidence": 0, "reason": str(exc)}
-                        decision_entry["final"] = screener_signal.action
-                    agent.last_signal = screener_signal.action
-                    agent.last_signal_symbol = symbol
-                    await self._execute_signal(
-                        agent, api_key, client, symbol, df,
-                        screener_signal, open_position, ai_available=True,
+                    # GPT failed (rate-limit, timeout, etc.).
+                    # Entries require GPT approval — block them when GPT is unavailable.
+                    # Exits are capital-critical and still execute from the screener.
+                    is_entry = screener_signal.action in ("enter_long", "enter_short")
+                    logger.warning(
+                        "agent {} GPT decision failed for {} ({}): {} — {}",
+                        agent.id, symbol, screener_signal.action, exc,
+                        "BLOCKING entry (no unreviewed entries)" if is_entry else "executing exit directly",
                     )
-                    if screener_signal.action != "hold":
-                        signals_summary.append(f"{symbol}:{screener_signal.action}")
-                        if decision_entry:
-                            decision_entry["trade_placed"] = True
+                    if decision_entry:
+                        decision_entry["gpt"] = {
+                            "decision": "blocked" if is_entry else "gpt_unavailable_exit",
+                            "confidence": 0,
+                            "reason": f"GPT unavailable: {exc}",
+                        }
+                        decision_entry["final"] = "hold" if is_entry else screener_signal.action
+                    if is_entry:
+                        # Do not enter without GPT approval — too many false signals at this confidence level
+                        agent.last_signal = "hold"
+                        agent.last_signal_symbol = f"{symbol} (GPT unavailable)"
+                    else:
+                        agent.last_signal = screener_signal.action
+                        agent.last_signal_symbol = symbol
+                        await self._execute_signal(
+                            agent, api_key, client, symbol, df,
+                            screener_signal, open_position, ai_available=False,
+                        )
+                        if screener_signal.action != "hold":
+                            signals_summary.append(f"{symbol}:{screener_signal.action}")
+                            if decision_entry:
+                                decision_entry["trade_placed"] = True
             elif candidates:
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
