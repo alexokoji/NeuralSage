@@ -32,6 +32,7 @@ async def init_db() -> None:
     from app.models.risk_event import RiskEvent
     from app.models.notification import Notification
     from app.models.strategy_observation import StrategyObservation
+    from app.models.news_signal import NewsSignal
 
     try:
         client = get_motor_client()
@@ -49,6 +50,7 @@ async def init_db() -> None:
                 RiskEvent,
                 Notification,
                 StrategyObservation,
+                NewsSignal,
             ],
         )
     except (ConfigurationError, PyMongoError, OSError, ValueError) as exc:

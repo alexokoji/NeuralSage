@@ -276,6 +276,41 @@ class TradingEngine:
                 "system_mood": getattr(agent, "system_mood", "neutral") or "neutral",
                 "guardian_notes": getattr(agent, "guardian_notes", "") or "",
             }
+
+            # Pre-fetch news sentiment for all trading pairs (one DB call per pair)
+            try:
+                from app.models.news_signal import NewsSignal
+                from app.services.news_sentinel import symbol_to_coin
+
+                market_sig = await NewsSignal.find_one(NewsSignal.coin == "MARKET")
+                news_by_coin: dict[str, dict] = {}
+                for _pair in list(agent.trading_pairs or []):
+                    _coin = symbol_to_coin(_pair)
+                    if _coin in news_by_coin:
+                        continue
+                    _sig = await NewsSignal.find_one(NewsSignal.coin == _coin)
+                    _src = _sig or market_sig
+                    if _src:
+                        news_by_coin[_coin] = {
+                            "coin": _coin,
+                            "sentiment": _src.sentiment,
+                            "score": float(_src.score),
+                            "summary": _src.summary,
+                            "key_events": list(_src.key_events or []),
+                            "fear_greed_value": _src.fear_greed_value,
+                            "fear_greed_label": _src.fear_greed_label,
+                            "updated_at": _src.updated_at.isoformat() if _src.updated_at else None,
+                        }
+                if news_by_coin:
+                    learning_context["news_by_coin"] = news_by_coin
+                if market_sig:
+                    learning_context["market_fear_greed"] = {
+                        "value": market_sig.fear_greed_value,
+                        "label": market_sig.fear_greed_label,
+                    }
+            except Exception as _news_exc:
+                logger.debug("agent {} news context fetch failed: {}", agent.id, _news_exc)
+
         except Exception as exc:
             logger.debug("agent {} learning context fetch failed: {}", agent.id, exc)
 

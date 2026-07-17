@@ -21,6 +21,7 @@ from app.services.exchange import build_client
 from app.services.strategy_guardian import snapshot_params as _guardian_snapshot
 from app.services.pnl_watchdog import run_pnl_watchdog
 from app.services.strategy_guardian import run_strategy_guardian
+from app.services.news_sentinel import run_news_sentinel
 from app.services.learning import LearningService
 from app.services.strategy import get_strategy
 from app.services.strategy.indicators import candles_to_df
@@ -1055,5 +1056,6 @@ __all__ = [
     "sync_funding_fees",
     "run_pnl_watchdog",
     "run_strategy_guardian",
+    "run_news_sentinel",
 ]
 

@@ -451,6 +451,44 @@ async def gpt_decide(
     else:
         mood_block = ""
 
+    # News & sentiment block — injected when the sentinel has scored this coin
+    news_by_coin: dict = ctx.get("news_by_coin") or {}
+    _coin = symbol.upper()
+    for _quote in ("USDT", "BUSD", "USD", "BTC", "ETH", "BNB"):
+        if _coin.endswith(_quote) and len(_coin) > len(_quote):
+            _coin = _coin[: -len(_quote)]
+            break
+    _news = news_by_coin.get(_coin) or news_by_coin.get("MARKET")
+    if _news:
+        _fng = _news.get("fear_greed_value")
+        _fng_label = _news.get("fear_greed_label", "")
+        _news_sentiment = str(_news.get("sentiment", "neutral")).upper()
+        _news_score = float(_news.get("score", 0.0))
+        _news_summary = str(_news.get("summary", ""))
+        _news_events = _news.get("key_events") or []
+        if _news_score <= -0.5:
+            _news_implication = (
+                "BEARISH BIAS: Short signals align with news — lower bar to approve. "
+                "Long signals need extra chart confirmation to overcome bearish sentiment."
+            )
+        elif _news_score >= 0.5:
+            _news_implication = (
+                "BULLISH BIAS: Long signals align with news — lower bar to approve. "
+                "Short signals need extra chart confirmation to overcome bullish sentiment."
+            )
+        else:
+            _news_implication = "NEUTRAL: Sentiment does not tip the balance — trade purely on chart signals."
+        news_block = (
+            f"=== LIVE NEWS & MARKET SENTIMENT ===\n"
+            f"Market Fear & Greed: {_fng}/100 ({_fng_label})\n"
+            f"{_coin} Sentiment: {_news_sentiment} (score: {_news_score:+.1f})\n"
+            f"Key Events: {', '.join(_news_events) if _news_events else 'none'}\n"
+            f"Summary: {_news_summary}\n"
+            f"Trading Implication: {_news_implication}\n"
+        )
+    else:
+        news_block = ""
+
     reversal_pending = bool((screener_signal.metadata or {}).get("reversal_pending", False))
     wick_rejection = bool((screener_signal.metadata or {}).get("wick_rejection", False))
 
@@ -470,7 +508,7 @@ async def gpt_decide(
         reversal_status = "✓ REVERSAL CONFIRMED — candle has already closed in the reversal direction."
 
     prompt = f"""You are reviewing a trade signal for final approval.
-{f"{chr(10)}{mood_block}{chr(10)}" if mood_block else ""}
+{f"{chr(10)}{mood_block}{chr(10)}" if mood_block else ""}{f"{chr(10)}{news_block}" if news_block else ""}
 SYMBOL: {symbol} | TIMEFRAME: {timeframe}
 
 SCREENER SIGNAL: {screener_signal.action} (confidence: {screener_signal.confidence:.2f})

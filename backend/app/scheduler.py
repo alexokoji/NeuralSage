@@ -27,6 +27,7 @@ from app.services.scheduler_jobs import (
     sync_funding_fees,
     run_pnl_watchdog,
     run_strategy_guardian,
+    run_news_sentinel,
 )
 
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -115,6 +116,14 @@ def start() -> None:
         run_strategy_guardian,
         IntervalTrigger(minutes=20),
         id="strategy_guardian",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    sched.add_job(
+        run_news_sentinel,
+        IntervalTrigger(minutes=10),
+        id="news_sentinel",
         max_instances=1,
         coalesce=True,
         replace_existing=True,
