@@ -450,6 +450,7 @@ class TradingEngine:
             # (enter_long / enter_short / exit). Holds skip GPT entirely.
             gpt_best = None  # (symbol, df, screener_signal, open_pos)
             decision_entry: dict | None = None  # captured for ai_decision_log
+            _exit_handled = False  # prevents double-exit when candidates loop already ran one
 
             for symbol, df, screener_signal, open_position in candidates[:1]:
                 logger.info(
@@ -480,6 +481,7 @@ class TradingEngine:
                     gpt_best = (symbol, df, screener_signal, open_position)
                 elif screener_signal.action == "exit" and open_position is not None:
                     gpt_best = None
+                    _exit_handled = True
                     agent.last_signal = "exit"
                     agent.last_signal_symbol = symbol
                     if decision_entry:
@@ -552,7 +554,7 @@ class TradingEngine:
                             signals_summary.append(f"{symbol}:{screener_signal.action}")
                             if decision_entry:
                                 decision_entry["trade_placed"] = True
-            elif candidates:
+            elif candidates and not _exit_handled:
                 best = candidates[0]
                 symbol, df, screener_signal, open_position = best
                 if screener_signal.action == "exit" and open_position is not None:
