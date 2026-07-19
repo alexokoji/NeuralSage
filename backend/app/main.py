@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -40,6 +42,32 @@ async def lifespan(app: FastAPI):
             _sched_shutdown = lambda: None  # noqa: E731
     else:
         _sched_shutdown = lambda: None  # noqa: E731
+
+    # Ping immediately so Render doesn't sleep before the first scheduled keep-alive.
+    async def _startup_ping() -> None:
+        await asyncio.sleep(5)
+        try:
+            from app.services.scheduler_jobs import keep_alive_ping
+            await keep_alive_ping()
+            logger.info("startup keep-alive ping sent")
+        except Exception as exc:
+            logger.debug("startup ping failed (non-fatal): {}", exc)
+
+    asyncio.create_task(_startup_ping())
+
+    # Seed the learning system immediately — without this, trades in the first
+    # hour after deploy have their realized PnL discarded because there are no
+    # StrategyObservation records to update yet.
+    async def _startup_optimize() -> None:
+        await asyncio.sleep(90)  # wait for DB + exchange clients to settle
+        try:
+            from app.services.scheduler_jobs import run_optimization_sweep
+            result = await run_optimization_sweep()
+            logger.info("startup optimization seeded learning DB: {}", result)
+        except Exception as exc:
+            logger.warning("startup optimization failed (non-fatal): {}", exc)
+
+    asyncio.create_task(_startup_optimize())
 
     # Start real-time WebSocket streams for live exchange agents.
     try:

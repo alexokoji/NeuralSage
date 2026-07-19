@@ -968,6 +968,7 @@ class TradingEngine:
                     symbol=pos.symbol,
                     timeframe=agent.timeframe,
                     pnl=gross,
+                    current_params=dict(agent.strategy_params or {}),
                 )
         except Exception:
             pass
@@ -1678,6 +1679,7 @@ class TradingEngine:
                     symbol=position.symbol,
                     timeframe=agent.timeframe,
                     pnl=gross,
+                    current_params=dict(agent.strategy_params or {}),
                 )
         except Exception:
             pass

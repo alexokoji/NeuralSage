@@ -504,6 +504,7 @@ async def reconcile_exchange_positions() -> dict:
                                     symbol=pos.symbol,
                                     timeframe=agent.timeframe,
                                     pnl=gross,
+                                    current_params=dict(agent.strategy_params or {}),
                                 )
                         except Exception:
                             pass
@@ -555,24 +556,29 @@ async def reconcile_exchange_positions() -> dict:
 
 
 async def keep_alive_ping() -> None:
-    """Ping external health endpoint to prevent Render free tier spin-down.
+    """Ping the public health endpoint to prevent Render free-tier spin-down.
 
-    Render only counts external HTTP requests for its idle timer, so we
-    hit our own public URL. Falls back to localhost if no external URL.
+    Render's idle timer resets on any inbound HTTP request — including a
+    self-ping through the public URL. A localhost request does NOT reset it,
+    so we always prefer RENDER_EXTERNAL_URL when available.
+
+    Log level is INFO so failures are visible in Render's log dashboard.
     """
     import httpx
     import os
-    external_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     if external_url:
         url = f"{external_url}/health"
+        source = "external"
     else:
         url = f"http://localhost:{settings.APP_PORT}/health"
+        source = "localhost (RENDER_EXTERNAL_URL not set — self-ping may not prevent sleep)"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
-        logger.debug("keep-alive ping {} -> {}", url, resp.status_code)
+        logger.info("keep-alive ping [{}] {} -> {}", source, url, resp.status_code)
     except Exception as exc:
-        logger.debug("keep-alive ping failed: {}", exc)
+        logger.warning("keep-alive ping [{}] {} FAILED: {}", source, url, exc)
 
 
 # --------------------------------------------------------------------------- #

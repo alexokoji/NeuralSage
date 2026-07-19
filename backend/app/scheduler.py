@@ -78,10 +78,10 @@ def start() -> None:
         replace_existing=True,
     )
 
-    # Self-ping to prevent Render free tier from spinning down (15min idle timeout).
+    # Self-ping every 5 min to stay under Render's 15-min idle sleep window.
     sched.add_job(
         keep_alive_ping,
-        IntervalTrigger(minutes=10),
+        IntervalTrigger(minutes=5),
         id="keep_alive",
         max_instances=1,
         coalesce=True,

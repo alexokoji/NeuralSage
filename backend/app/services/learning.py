@@ -68,11 +68,16 @@ class LearningService:
         symbol: str,
         timeframe: str,
         pnl: float,
+        current_params: "dict[str, Any] | None" = None,
     ) -> None:
         """Update the most recent observation for this agent's strategy with real trade PnL.
 
         Called when a position closes — this is the critical feedback loop that
         lets agents learn from actual outcomes, not just backtests.
+
+        When no observation exists yet (optimizer hasn't run since deploy), a
+        lightweight stub is created using the agent's current params so realized
+        PnL data is never silently discarded.
         """
         obs = await StrategyObservation.find(
             StrategyObservation.source_agent_id == agent_id,
@@ -87,7 +92,21 @@ class LearningService:
             ).sort(-StrategyObservation.created_at).first_or_none()
 
         if obs is None:
-            return
+            if not current_params:
+                return  # nothing to anchor a stub to — skip silently
+            # No optimizer has run yet — create a stub so this PnL isn't lost.
+            # The hourly optimizer will later create a proper observation with a
+            # backtest score; this stub ensures the realized outcome is captured.
+            obs = StrategyObservation(
+                strategy_type=strategy_type,
+                symbol=symbol,
+                timeframe=timeframe,
+                params=current_params,
+                backtest_score=0.0,
+                source_agent_id=agent_id,
+                source_user_id=None,
+            )
+            await obs.insert()
 
         obs.realized_pnl = float(obs.realized_pnl or 0) + pnl
         obs.realized_trades = int(obs.realized_trades or 0) + 1
@@ -117,14 +136,16 @@ class LearningService:
         if not pool:
             return []
 
-        # Only use observations that are profitable or untested (no realized data yet).
-        # Never seed the optimizer with params that lost real money.
+        # Prefer profitable or untested observations — never seed from known losers.
         safe_pool = [
             o for o in pool
             if float(o.realized_pnl or 0) >= 0 or int(o.realized_trades or 0) == 0
         ]
         if not safe_pool:
-            safe_pool = pool[:2]
+            # Every observation has proven negative PnL.  Use the least bad ones
+            # (closest realized_pnl to 0) so the optimizer starts near a local
+            # minimum rather than a random corner of the search space.
+            safe_pool = sorted(pool, key=lambda o: float(o.realized_pnl or 0), reverse=True)[:3]
 
         safe_pool.sort(key=trust_score, reverse=True)
         return [dict(o.params) for o in safe_pool[:n]]
