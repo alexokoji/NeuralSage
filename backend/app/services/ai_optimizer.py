@@ -13,6 +13,7 @@ using the same strategy / symbol / timeframe — see learning.py.
 from __future__ import annotations
 
 import asyncio
+import functools
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,7 +98,10 @@ async def optimize_strategy_async(
         if grok_params:
             enhanced_warm_starts.insert(0, grok_params)  # Grok's suggestion goes first
 
-    return optimize_strategy(
+    # gp_minimize is CPU-bound and synchronous — run it in a thread so it
+    # cannot block the asyncio event loop and cause other scheduled jobs to miss.
+    fn = functools.partial(
+        optimize_strategy,
         strategy,
         candles,
         base_params,
@@ -105,6 +109,7 @@ async def optimize_strategy_async(
         n_calls=n_calls,
         random_state=random_state,
     )
+    return await asyncio.to_thread(fn)
 
 
 def optimize_strategy(
